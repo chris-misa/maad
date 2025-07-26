@@ -33,9 +33,13 @@ main = do
     [filepath] -> do
       pfxs <- PM.fromFile filepath False head (const ())
       
-      let res = M.keys pfxs
+      let addrs = M.keys pfxs
             & filter ((== 32) . PM.prefixLength)
-            & fmap (id &&& getSingularity pfxs)
+
+          n = length addrs
+      
+          res = addrs
+            & fmap (id &&& getSingularity n pfxs)
             & L.sortOn (fst . snd)
             
           putOne label (Prefix addr _, (alpha, (intercept, r2, nPls))) =
@@ -56,8 +60,8 @@ main = do
  - Report the singularity estimate of a given prefix w.r.t. the given prefix map
  - Returns (alpha, intercept, r2, number of prefix-lengths actually used)
  -}
-getSingularity :: PrefixMap () -> Prefix -> (Double, (Double, Double, Int))
-getSingularity pfxs (Prefix addr 32) =
+getSingularity :: Int -> PrefixMap () -> Prefix -> (Double, (Double, Double, Int))
+getSingularity n pfxs (Prefix addr 32) =
   let oneLevel l =
         let pfx = Prefix (preserveUpperBits addr l) l
             mu = case M.lookup pfx pfxs of
@@ -71,4 +75,4 @@ getSingularity pfxs (Prefix addr 32) =
 
       (coef, r2) = Reg.olsRegress [pl] muLogs
   in (coef VU.! 0, (coef VU.! 1, r2, VU.length muLogs))
-getSingularity _ _ = error "Trying to get singularity of something other than a /32 address..."
+getSingularity _ _ _ = error "Trying to get singularity of something other than a /32 address..."
