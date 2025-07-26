@@ -9,11 +9,12 @@ import System.Environment
 import Data.Function ((&))
 import Control.Arrow
 
+import Data.Word
+
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
 
 import qualified Data.List as L
-import qualified Data.HashMap.Strict as M
 
 import qualified Data.Vector.Unboxed as VU
 import qualified Statistics.Regression as Reg
@@ -33,8 +34,7 @@ main = do
     [filepath] -> do
       pfxs <- PM.fromFile filepath False head (const ())
       
-      let addrs = M.keys pfxs
-            & filter ((== 32) . PM.prefixLength)
+      let addrs = PM.addresses pfxs
 
           n = length addrs
       
@@ -42,7 +42,7 @@ main = do
             & fmap (id &&& getSingularity n pfxs)
             & L.sortOn (fst . snd)
             
-          putOne label (Prefix addr _, (alpha, (intercept, r2, nPls))) =
+          putOne label ((addr, ()), (alpha, (intercept, r2, nPls))) =
             putStrLn $ label ++ ":" ++
               B.unpack (ipv4_to_string addr) ++ "," ++
               show alpha ++ "," ++
@@ -60,13 +60,11 @@ main = do
  - Report the singularity estimate of a given prefix w.r.t. the given prefix map
  - Returns (alpha, intercept, r2, number of prefix-lengths actually used)
  -}
-getSingularity :: Int -> PrefixMap () -> Prefix -> (Double, (Double, Double, Int))
-getSingularity n pfxs (Prefix addr 32) =
+getSingularity :: Int -> PrefixMap () -> (Word32, ()) -> (Double, (Double, Double, Int))
+getSingularity n pfxs (addr, _) =
   let oneLevel l =
-        let pfx = Prefix (preserveUpperBits addr l) l
-            mu = case M.lookup pfx pfxs of
-              Just m -> fst m
-              Nothing -> 0
+        let pfx = PM.preserve_upper_bits32 (Prefix addr 32) l
+            (mu, _) = PM.lookup pfx pfxs
             muNorm = fromIntegral mu  / fromIntegral n
         in - logBase 2 muNorm
   
@@ -75,4 +73,3 @@ getSingularity n pfxs (Prefix addr 32) =
 
       (coef, r2) = Reg.olsRegress [pl] muLogs
   in (coef VU.! 0, (coef VU.! 1, r2, VU.length muLogs))
-getSingularity _ _ _ = error "Trying to get singularity of something other than a /32 address..."
