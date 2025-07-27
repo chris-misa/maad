@@ -25,13 +25,13 @@ import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 usage :: String
-usage = "Singularities <filepath>"
+usage = "Singularities <number of anomalous addresses to output> <filepath>"
 
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [filepath] -> do
+    [numOuts, filepath] -> do
       pfxs <- PM.fromFile filepath False head (const ())
       
       let addrs = PM.addresses pfxs
@@ -50,8 +50,23 @@ main = do
               show r2 ++ "," ++
               show nPls
 
-      putOne "min" (L.head res)
-      putOne "max" (L.last res)
+      res
+        & take (read numOuts)
+        & zip [1..]
+        & fmap (\(i, r) -> putOne ("bottom" ++ show i) r)
+        & sequence
+
+      res
+        & reverse
+        & take (read numOuts)
+        & zip [1..]
+        & fmap (\(i, r) -> putOne ("top" ++ show i) r)
+        & sequence
+
+      return ()
+      
+      -- putOne "min" (L.head res)
+      -- putOne "max" (L.last res)
               
     _ -> do
       putStrLn usage
