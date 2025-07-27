@@ -100,9 +100,10 @@ insert t@(Node pfx n oldVal left right) new@(addr, val) =
       t -- Ignore duplicates
     else if subprefix newPrefix pfx
     then
-      if prefixLength pfx >= 32
-      then error "super prefix too long"
-      else if get_bit32 newPrefix (prefixLength pfx + 1)
+      -- if prefixLength pfx >= 32
+      -- then error "Trying to add subprefix to a /32"
+      -- else
+      if get_bit32 newPrefix (prefixLength pfx + 1)
       then Node pfx (n + 1) oldVal left (insert right new)
       else Node pfx (n + 1) oldVal (insert left new) right
     else
@@ -110,27 +111,25 @@ insert t@(Node pfx n oldVal left right) new@(addr, val) =
           !parentPfx = preserve_upper_bits32 pfx parentLength
           newNode = Node newPrefix 1 (Just val) EmptyMap EmptyMap
       in
-        if parentLength >= 32
-        then error "Parent too long"
-        else if get_bit32 newPrefix (parentLength + 1)
+        -- if parentLength >= 32
+        -- then error "Common parent too long"
+        -- else
+        if get_bit32 newPrefix (parentLength + 1)
         then Node parentPfx (n + 1) Nothing t newNode
         else Node parentPfx (n + 1) Nothing newNode t
 
 
-
--- TODO: the problem is that insert needs to add intermediate nodes for each prefix length so that the later analysis works...
--- ACTUALLY: better to do this on a separate pass to avoid extra lookups when building the tree...
-
 lookup :: Prefix -> PrefixMap a -> (Int, a)
 lookup targetPfx (Node pfx n valM left right) =
-  if targetPfx == pfx
+  if targetPfx == pfx || subprefix pfx targetPfx
   then (n, fromJust valM)
   else
     let pl = prefixLength pfx
     in
-      if pl >= 32
-      then lookup targetPfx EmptyMap
-      else if get_bit32 targetPfx (pl + 1)
+      -- if pl >= 32
+      -- then lookup targetPfx EmptyMap
+      -- else
+      if get_bit32 targetPfx (pl + 1)
       then lookup targetPfx right
       else lookup targetPfx left
 lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
