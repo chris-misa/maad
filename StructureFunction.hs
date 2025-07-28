@@ -34,7 +34,7 @@ usage :: String
 usage = "StructureFunction <filepath>"
 
 qs :: [Double]
-qs = [-1.0, -0.9..3.4]
+qs = [-2.0, -1.9..4.0]
 
 prefixLengths :: [Int]
 prefixLengths = [8..15]
