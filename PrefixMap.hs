@@ -23,7 +23,7 @@ import GHC.Generics (Generic)
 import qualified Data.HashMap.Strict as M
 import Data.HashMap.Strict (HashMap)
 
-import Prelude hiding (lookup)
+import Prelude hiding (lookup, filter)
 
 -- Local imports
 import Common
@@ -152,7 +152,7 @@ filter f (Node pfx count val left right)
 sliceAtLength :: Int -> PrefixMap a -> PrefixMap a
 sliceAtLength targetL (Node (Prefix addr l) count _ left right)
   | l >= targetL =
-      let pfx = Prefix (preserve_upper_bits32 addr targetL) targetL
+      let pfx = preserve_upper_bits32 (Prefix addr l) targetL
       in Node pfx count Nothing EmptyMap EmptyMap
   | otherwise =
       let left' = sliceAtLength targetL left
