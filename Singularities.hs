@@ -65,9 +65,6 @@ main = do
 
       return ()
       
-      -- putOne "min" (L.head res)
-      -- putOne "max" (L.last res)
-              
     _ -> do
       putStrLn usage
 

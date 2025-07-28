@@ -118,7 +118,10 @@ insert t@(Node pfx n oldVal left right) new@(addr, val) =
         then Node parentPfx (n + 1) Nothing t newNode
         else Node parentPfx (n + 1) Nothing newNode t
 
-
+{-
+ - Look up a given prefix
+ - Returns the address count and user-defined value of the target prefix or it's nearest child
+ -}
 lookup :: Prefix -> PrefixMap a -> (Int, a)
 lookup targetPfx (Node pfx n valM left right) =
   if targetPfx == pfx || subprefix pfx targetPfx
@@ -133,7 +136,37 @@ lookup targetPfx (Node pfx n valM left right) =
       then lookup targetPfx right
       else lookup targetPfx left
 lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
-      
+
+{-
+ - Remove all subtrees that start wit a node for which f is true
+ -}
+filter :: (Prefix -> Int -> Bool) -> PrefixMap a -> PrefixMap a
+filter f (Node pfx count val left right)
+  | f pfx count = Node pfx count val (filter f left) (filter f right)
+  | otherwise = EmptyMap
+
+{-
+ - Slices the prefix map so that it only contains up to /targetL prefixes
+ - May generate new prefixes at /targetL if they're not already in the prefix map.
+ -}
+sliceAtLength :: Int -> PrefixMap a -> PrefixMap a
+sliceAtLength targetL (Node (Prefix addr l) count _ left right)
+  | l >= targetL =
+      let pfx = Prefix (preserve_upper_bits32 addr targetL) targetL
+      in Node pfx count Nothing EmptyMap EmptyMap
+  | otherwise =
+      let left' = sliceAtLength targetL left
+          right' = sliceAtLength targetL right
+      in Node (Prefix addr l) count Nothing left' right'
+
+{-
+ - Returns a list of leaves
+ -}
+leaves :: PrefixMap a -> [(Prefix, Int)]
+leaves (Node pfx count _ EmptyMap EmptyMap) = [(pfx, count)]
+leaves (Node _ _ _ left right) = leaves left ++ leaves right
+
+  
 
 {-
  - Returns a list of the /32 addresses or leaves of the prefix map
