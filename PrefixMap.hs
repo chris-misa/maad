@@ -85,6 +85,12 @@ preserve_upper_bits32 (Prefix pfx _) pl
     in Prefix pfx' pl
   | otherwise = error $ "Trying to preserve " ++ show pl ++ " bits in ipv4"
 
+
+children :: Prefix -> [Prefix]
+children (Prefix pfx pl) =
+  let pl' = pl + 1
+  in [Prefix pfx pl', Prefix (pfx .|. (1 `shiftL` (32 - pl'))) pl']
+
 {-
  - PrefixMap type
  -}
@@ -137,6 +143,19 @@ lookup targetPfx (Node pfx n valM left right) =
       else lookup targetPfx left
 lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
 
+lookupDefault :: Int -> PrefixMap a -> Prefix -> Int
+lookupDefault d (Node pfx n valM left right) targetPfx =
+  if targetPfx == pfx || subprefix pfx targetPfx
+  then n
+  else
+    let pl = prefixLength pfx
+    in
+      if get_bit32 targetPfx (pl + 1)
+      then lookupDefault d right targetPfx
+      else lookupDefault d left targetPfx
+lookupDefault d EmptyMap targetPfx = d
+
+
 {-
  - Remove all subtrees that start wit a node for which f is true
  -}
@@ -144,6 +163,7 @@ filter :: (Prefix -> Int -> Bool) -> PrefixMap a -> PrefixMap a
 filter f (Node pfx count val left right)
   | f pfx count = Node pfx count val (filter f left) (filter f right)
   | otherwise = EmptyMap
+filter _ EmptyMap = EmptyMap
 
 {-
  - Slices the prefix map so that it only contains up to /targetL prefixes

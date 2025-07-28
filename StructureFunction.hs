@@ -11,6 +11,7 @@ module StructureFunction where
 import System.Environment
 import Data.Function ((&))
 import Control.Arrow
+import Control.Monad
 
 import Data.Word
 
@@ -20,7 +21,9 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.List as L
 
 import qualified Data.Vector.Unboxed as VU
-import qualified Statistics.Regression as Reg
+import qualified Statistics.Sample as SS
+
+import Data.TreeFold (treeFold)
 
 -- Local imports
 import Common
@@ -42,12 +45,29 @@ main = do
   case args of
     [filepath] -> do
       pfxs <- PM.fromFile filepath False head (const ())
-      undefined -- TODO: continue here
+      putStrLn "q,tauTilde,sd"
+      forM_ qs $ \q -> do
+        let moms = fmap (oneMoment pfxs q) prefixLengths
+            n = fromIntegral (length moms)
+            tauTilde = moms
+              & fmap fst
+              & VU.fromList
+              & SS.mean
+            sd = moms
+              & fmap snd
+              & treeFold (+) 0.0
+              & ((/ n) . sqrt)
+        putStrLn $ show q ++ "," ++ show tauTilde ++ "," ++ show sd
     _ -> putStrLn usage
 
 
-oneMoment :: PrefixMap () -> Int -> Double -> (Double, Double)
-oneMoment pm pl q =
+{-
+ - Compute the modified O&W estimator for a single prefix length and q pair
+ -
+ - Returns the estimated tau(q) and variance
+ -}
+oneMoment :: PrefixMap () -> Double -> Int -> (Double, Double)
+oneMoment pm q pl =
   let nextPl = pm
         & PM.sliceAtLength (pl + 1)
         & PM.filter (\(Prefix _ l) count -> count > 1 || l > pl)
@@ -63,8 +83,20 @@ oneMoment pm pl q =
       thisZ = thisPl
         & PM.leaves
         & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & treeFold (+) 0.0
 
-      -- TODO: continue here with variance term
+      oneD2 (pfx, count) =
+        let childSum = PM.children pfx
+              & fmap (PM.lookupDefault 0 nextPl)
+              & L.filter (> 0)
+              & fmap ((** q) . (/ total) . fromIntegral)
+              & foldl1 (+)
+            mu = (fromIntegral count / total)
+        in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
+              
+      d2 = thisPl
+        & PM.leaves
+        & fmap oneD2
+        & treeFold (+) 0.0
 
-  in undefined
-
+  in (logBase 2 thisZ - logBase 2 nextZ, d2)
