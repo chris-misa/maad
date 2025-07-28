@@ -1,4 +1,7 @@
 {-
+ - Copyright: 2025 Chris Misa
+ - License: (See ./LICENSE)
+ -
  - Common datastructure and manips for dealing with IP address prefix trees stored in an associative map.
  -}
 

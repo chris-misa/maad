@@ -1,4 +1,7 @@
 {-
+ - Copyright: 2025 Chris Misa
+ - License: (See ./LICENSE)
+ -
  - Common utilities for IP addresses
  -}
 

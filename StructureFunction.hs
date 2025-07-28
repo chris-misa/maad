@@ -1,4 +1,7 @@
 {-
+ - Copyright: 2025 Chris Misa
+ - License: (See ./LICENSE)
+ -
  - The structure function (tau(q))
  -
  - Estimated using the method of Misa et al., 2025: https://arxiv.org/pdf/2504.01374

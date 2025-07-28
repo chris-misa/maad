@@ -1,4 +1,7 @@
 {-
+ - Copyright: 2025 Chris Misa
+ - License: (See ./LICENSE)
+ -
  - The alpha(x) or singularity metrics
  - Returns the top and bottom n addresses
  -}
