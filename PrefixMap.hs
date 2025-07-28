@@ -18,8 +18,11 @@ import Text.Read (readMaybe)
 import Control.Monad
 import Control.Arrow
 
+import System.IO
+
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy.Char8 as BL
 
 import Data.Hashable
 import GHC.Generics (Generic)
@@ -213,11 +216,13 @@ fromFile :: String -- the filepath to load
   -> ([ByteString] -> a) -- function that returns any auxiliary metadata to associate with the row's address
   -> IO (PrefixMap a)
 fromFile filename skipHeader getAddr getAux = do
-  contents <- B.readFile filename
+  contents <- if filename == "-" then BL.getContents else BL.readFile filename
   contents
-    & B.lines
+    & BL.lines
     & (if skipHeader then tail else id)
-    & fmap (B.split ',')
+    & fmap (B.split ',' . BL.toStrict)
     & fmap ((string_to_ipv4 . getAddr) &&& getAux)
     & foldl insert EmptyMap
     & return
+
+

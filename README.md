@@ -2,6 +2,8 @@
 
 Source code for various Multifractal Address Anomaly Detection (MAAD) techniques.
 
+For background see Misa et al., 2025: https://arxiv.org/pdf/2504.01374.
+
 # Compile
 
 Use nix:
@@ -14,13 +16,15 @@ Otherwise, find your own way to get `ghc` and required libraries listed in `shel
 
 # Usage
 
+To read from stdin, use "-" as input filepath.
+
 A couple example input files with lists of IPv4 addresses are included in `./test_data/` for testing.
 
 ## Singularities
 
 Usage:
 ```
-$ ./Singularities <numbed of anomalous addresses to report> <input filepath>
+$ ./Singularities <number of anomalous addresses to report> <input filepath>
 ```
 
 Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
