@@ -40,7 +40,7 @@ qs :: [Double]
 qs = [-2.0, -1.9..4.0]
 
 prefixLengths :: [Int]
-prefixLengths = [8..15]
+prefixLengths = [8..16]
 
 main :: IO ()
 main = do
