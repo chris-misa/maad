@@ -149,6 +149,9 @@ lookup targetPfx (Node pfx n valM left right) =
       else lookup targetPfx left
 lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
 
+{-
+ - Same as lookup but only returns the count of the found node with a default value if not found
+ -}
 lookupDefault :: Int -> PrefixMap a -> Prefix -> Int
 lookupDefault d (Node pfx n valM left right) targetPfx =
   if targetPfx == pfx || subprefix pfx targetPfx
@@ -161,9 +164,8 @@ lookupDefault d (Node pfx n valM left right) targetPfx =
       else lookupDefault d left targetPfx
 lookupDefault d EmptyMap targetPfx = d
 
-
 {-
- - Remove all subtrees that start wit a node for which f is true
+ - Remove all subtrees that start with a node for which f is true
  -}
 filter :: (Prefix -> Int -> Bool) -> PrefixMap a -> PrefixMap a
 filter f (Node pfx count val left right)
@@ -184,6 +186,7 @@ sliceAtLength targetL (Node (Prefix addr l) count _ left right)
       let left' = sliceAtLength targetL left
           right' = sliceAtLength targetL right
       in Node (Prefix addr l) count Nothing left' right'
+sliceAtLength _ EmptyMap = EmptyMap
 
 {-
  - Returns a list of leaves
@@ -191,8 +194,7 @@ sliceAtLength targetL (Node (Prefix addr l) count _ left right)
 leaves :: PrefixMap a -> [(Prefix, Int)]
 leaves (Node pfx count _ EmptyMap EmptyMap) = [(pfx, count)]
 leaves (Node _ _ _ left right) = leaves left ++ leaves right
-
-  
+leaves EmptyMap = []
 
 {-
  - Returns a list of the /32 addresses or leaves of the prefix map
@@ -224,5 +226,3 @@ fromFile filename skipHeader getAddr getAux = do
     & fmap ((string_to_ipv4 . getAddr) &&& getAux)
     & foldl insert EmptyMap
     & return
-
-

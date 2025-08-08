@@ -22,7 +22,14 @@ set grid xtics ytics
 set errorbars small
 set xlabel "q"
 set ylabel "tauTilde(q)"
-set arrow from (-1.0),-1.5 to (-1.0),1.5 nohead dashtype 2
-set arrow from (3.4),-1.5 to (3.4),1.5 nohead dashtype 2
+
+stats infile using "tauTilde" prefix "A" nooutput
+
+set arrow from (-1.0),A_min to (-1.0),A_max nohead dashtype 2
+set arrow from (3.4),A_min to (3.4),A_max nohead dashtype 2
+
+set arrow from (-1.0 / 2),A_min to (-1.0 / 2),A_max nohead dashtype 3
+set arrow from (3.4 / 2),A_min to (3.4 / 2),A_max nohead dashtype 3
+
 plot infile using "q":"tauTilde":(column("sd")*1.959964) with yerrorlines pointtype 0
 # multiply sd by qnorm(0.975) for confidence interval

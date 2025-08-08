@@ -71,10 +71,13 @@ main = do
  -}
 oneMoment :: PrefixMap () -> Double -> Int -> (Double, Double)
 oneMoment pm q pl =
-  let nextPl = pm
+  let thisPl = pm
+        & PM.sliceAtLength pl
+        & PM.filter (\_ count -> count > 1)
+
+      nextPl = pm
         & PM.sliceAtLength (pl + 1)
-        & PM.filter (\(Prefix _ l) count -> count > 1 || l > pl)
-      thisPl = PM.sliceAtLength pl nextPl
+        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
 
       total = fromIntegral $ length $ PM.leaves thisPl
 
@@ -91,7 +94,8 @@ oneMoment pm q pl =
       oneD2 (pfx, count) =
         let childSum = PM.children pfx
               & fmap (PM.lookupDefault 0 nextPl)
-              & L.filter (> 0)
+              & filter (> 0)
+              & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
               & fmap ((** q) . (/ total) . fromIntegral)
               & foldl1 (+)
             mu = (fromIntegral count / total)
@@ -99,6 +103,7 @@ oneMoment pm q pl =
               
       d2 = thisPl
         & PM.leaves
+        & filter (\(pfx, _) -> PM.prefixLength pfx == pl)
         & fmap oneD2
         & treeFold (+) 0.0
 
