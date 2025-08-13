@@ -21,7 +21,5 @@ set key off
 set grid xtics ytics
 set errorbars small
 set xlabel "alpha"
-set xrange [0:1]
 set ylabel "f(alpha)"
-set yrange [0:1]
 plot infile using "alpha":"f" with lines, x with lines

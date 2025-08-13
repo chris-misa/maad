@@ -20,6 +20,18 @@ To read from stdin, use "-" as input filepath.
 
 A couple example input files with lists of IPv4 addresses are included in `./test_data/` for testing.
 
+
+## Multifractal Spectrum
+
+Usage:
+```
+$ ./Spectrum <input filepath>
+```
+
+Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
+
+Outputs the estimated multifractal spectrum (f(alpha)) for the given list of addresses. See `Spectrum.hs` for details.
+
 ## Singularities
 
 Usage:
@@ -42,3 +54,14 @@ $ ./StructureFunction <input filepath>
 Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
 
 Not really an anomaly detection method. Outputs the estimated structure function (tauTilde(q)) for the given list of addresses along with estimated standard deviations. See `StructureFunction.hs` for details.
+
+
+# Visualization
+
+Scripts to generate plots of the structure and spectrum functions are included in the `./plots/` directory along with a wrapper script `./plots/plot.sh` that takes care of calling gnuplot with the right arguments.
+
+For example, if you've saved the spectrum function in `spec.csv`, you could generate a plot by running
+```
+$ ./plots/plot.sh plots/spectrum.gnuplot spec.csv spec.svg
+```
+
