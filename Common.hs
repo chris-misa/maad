@@ -24,6 +24,7 @@ preserveUpperBits w n = (w `shiftR` (32 - n)) `shiftL` (32 - n)
 string_to_ipv4 :: ByteString -> Word32
 string_to_ipv4 str =
   str
+  & B.dropSpace
   & B.map (\c -> if c == '.' then '\n' else c)
   & B.lines
   & zip [24,16..0]
