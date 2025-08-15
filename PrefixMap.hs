@@ -58,7 +58,7 @@ addressToPrefix addr = Prefix addr 32
 prefixLength :: Prefix -> Int
 prefixLength (Prefix _ pl) = pl
 
--- subprefix t1 t2 is true if t1 is a subprefix of t2
+-- subprefix t1 t2 (or t1 `subprefix` t2) is true if t1 is a subprefix of t2
 {-# INLINABLE subprefix #-}
 subprefix :: Prefix -> Prefix -> Bool
 subprefix (Prefix pfx pl) (Prefix pfx' pl') =
@@ -102,22 +102,25 @@ children (Prefix pfx pl) =
  -}
 data PrefixMap a = Node !Prefix !Int (Maybe a) (PrefixMap a) (PrefixMap a) | EmptyMap
 
-insert :: PrefixMap a -> (Word32, a) -> PrefixMap a
-insert EmptyMap (addr, val) = Node (addressToPrefix addr) 1 (Just val) EmptyMap EmptyMap
-insert t@(Node pfx n oldVal left right) new@(addr, val) =
+{-
+ - Insert the given address into the prefix map assuming it is not in the map already
+ -}
+insertNoDup :: PrefixMap a -> (Word32, a) -> PrefixMap a
+insertNoDup EmptyMap (addr, val) = Node (addressToPrefix addr) 1 (Just val) EmptyMap EmptyMap
+insertNoDup t@(Node pfx n oldVal left right) new@(addr, val) =
   let newPrefix = addressToPrefix addr
   in
     if newPrefix == pfx
     then
-      t -- Ignore duplicates
-    else if subprefix newPrefix pfx
+      error "Trying to insert same prefix twice!"
+    else if newPrefix `subprefix` pfx
     then
       -- if prefixLength pfx >= 32
       -- then error "Trying to add subprefix to a /32"
       -- else
       if get_bit32 newPrefix (prefixLength pfx + 1)
-      then Node pfx (n + 1) oldVal left (insert right new)
-      else Node pfx (n + 1) oldVal (insert left new) right
+      then Node pfx (n + 1) oldVal left (insertNoDup right new)
+      else Node pfx (n + 1) oldVal (insertNoDup left new) right
     else
       let !parentLength = first_diff_bit32 newPrefix pfx - 1
           !parentPfx = preserve_upper_bits32 pfx parentLength
@@ -136,15 +139,14 @@ insert t@(Node pfx n oldVal left right) new@(addr, val) =
  -}
 lookup :: Prefix -> PrefixMap a -> (Int, a)
 lookup targetPfx (Node pfx n valM left right) =
-  if targetPfx == pfx || subprefix pfx targetPfx
+  if targetPfx == pfx || pfx `subprefix` targetPfx
   then (n, fromJust valM)
   else
     let pl = prefixLength pfx
     in
-      -- if pl >= 32
-      -- then lookup targetPfx EmptyMap
-      -- else
-      if get_bit32 targetPfx (pl + 1)
+      if pl >= 32
+      then lookup targetPfx EmptyMap
+      else if get_bit32 targetPfx (pl + 1)
       then lookup targetPfx right
       else lookup targetPfx left
 lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
@@ -159,10 +161,23 @@ lookupDefault d (Node pfx n valM left right) targetPfx =
   else
     let pl = prefixLength pfx
     in
-      if get_bit32 targetPfx (pl + 1)
+      if pl >= 32
+      then lookupDefault d EmptyMap targetPfx
+      else if get_bit32 targetPfx (pl + 1)
       then lookupDefault d right targetPfx
       else lookupDefault d left targetPfx
 lookupDefault d EmptyMap targetPfx = d
+
+
+{-
+ - Insert the given address into the prefix map, ignoring it if it is in the map already
+ -}
+insert :: PrefixMap a -> (Word32, a) -> PrefixMap a
+insert m new@(addr, _) =
+  if lookupDefault 0 m (addressToPrefix addr) == 0
+  then insertNoDup m new
+  else m
+
 
 {-
  - Remove all subtrees that start with a node for which f is true
