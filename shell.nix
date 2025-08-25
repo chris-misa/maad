@@ -6,6 +6,7 @@ with (import (builtins.fetchTarball {
 }) {});
 mkShell {
   buildInputs = [
+    # Haskell environment
     (haskellPackages.ghcWithPackages (pkgs: with pkgs; [
       bytestring
       unordered-containers
@@ -13,6 +14,19 @@ mkShell {
       wide-word
       treefold
     ]))
+    
+    # Python
+    python313
+    python313Packages.pip
+    python313Packages.numpy
+    python313Packages.nanobind
+    
+    # C++ build
+    cmake
+    gcc
+    pkg-config
+    
+    # Dev tools
     emacs
     gnuplot
   ];
