@@ -1,0 +1,1 @@
+/nix/store/a0d7m3zn9p2dfa1h7ag9h2wzzr2w25sn-gcc-wrapper-14.2.1.20250322/bin/g++ -fPIC -O3 -DNDEBUG -Wl,-s -Wl,--gc-sections -Wl,--dependency-file=CMakeFiles/maad.dir/link.d -shared  -o maad.cpython-313-x86_64-linux-gnu.so CMakeFiles/maad.dir/maadmodule.cpp.o  libnanobind-static.a
