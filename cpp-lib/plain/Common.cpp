@@ -38,9 +38,9 @@ string ipv4_to_string(uint32_t ip) {
   return result;
 }
 
-// int main() {
-//   uint32_t test_ip = string_to_ipv4("192.168.1.1");
-//   cout << "IP as int: " << test_ip << endl;
-//   cout << "Back to string: " << ipv4_to_string(test_ip) << endl;
-//   return 0;
-// }
+int main() {
+  uint32_t test_ip = string_to_ipv4("192.168.1.1");
+  cout << "IP as int: " << test_ip << endl;
+  cout << "Back to string: " << ipv4_to_string(test_ip) << endl;
+  return 0;
+}
