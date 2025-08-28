@@ -1,9 +1,9 @@
 #include <string>
 #include <iostream>
 #include <vector>
-#include <numeric>
 
 using namespace std;
+
 
 int main() {
   double deltaQ = 0.1;
