@@ -30,5 +30,5 @@ int main(int argc, char *argv[]) {
   while (l <= 16) {
     prefixLengths.push_back(l++);    
   }
-
+  
 }
