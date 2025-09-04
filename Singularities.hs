@@ -28,7 +28,7 @@ import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 usage :: String
-usage = "Singularities <number of anomalous addresses to output> <filepath>"
+usage = "Singularities <number of anomalous addresses to output (use -1 to output all addresses as csv)> <filepath>"
 
 main :: IO ()
 main = do
@@ -53,20 +53,35 @@ main = do
               show r2 ++ "," ++
               show nPls
 
-      res
-        & take (read numOuts)
-        & zip [1..]
-        & fmap (\(i, r) -> putOne ("bottom" ++ show i) r)
-        & sequence
+      if read numOuts == -1
+        then do
+        putStrLn "addr,alpha,intercept,r2,nPls"
+        res
+          & fmap (\((addr, ()), (alpha, (intercept, r2, nPls))) -> putStrLn $
+                   B.unpack (ipv4_to_string addr) ++ "," ++
+                   show alpha ++ "," ++
+                   show intercept ++ "," ++
+                   show r2 ++ "," ++
+                   show nPls
+                 )
+          & sequence
+        return ()
+                 
+        else do
+        res
+          & take (read numOuts)
+          & zip [1..]
+          & fmap (\(i, r) -> putOne ("bottom" ++ show i) r)
+          & sequence
 
-      res
-        & reverse
-        & take (read numOuts)
-        & zip [1..]
-        & fmap (\(i, r) -> putOne ("top" ++ show i) r)
-        & sequence
+        res
+          & reverse
+          & take (read numOuts)
+          & zip [1..]
+          & fmap (\(i, r) -> putOne ("top" ++ show i) r)
+          & sequence
 
-      return ()
+        return ()
       
     _ -> do
       putStrLn usage
