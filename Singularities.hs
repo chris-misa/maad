@@ -96,9 +96,9 @@ getSingularity n pfxs (addr, _) =
         let pfx = PM.preserve_upper_bits32 (Prefix addr 32) l
             (mu, _) = PM.lookup pfx pfxs
             muNorm = fromIntegral mu  / fromIntegral n
-        in - logBase 2 muNorm
+        in (- logBase 2 muNorm, mu /= 1)
   
-      muLogs = VU.generate 33 oneLevel & VU.takeWhile (/= 1)
+      muLogs = VU.generate 33 oneLevel & VU.takeWhile snd & VU.map fst
       pl = VU.generate (VU.length muLogs) fromIntegral
 
       (coef, r2) = Reg.olsRegress [pl] muLogs
