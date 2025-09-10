@@ -8,3 +8,5 @@ ghc -O2 StructureFunction.hs -main-is StructureFunction
 
 #ghc -O2 -prof -fprof-auto Spectrum.hs -main-is Spectrum
 ghc -O2 Spectrum.hs -main-is Spectrum
+
+ghc -O2 PrefixCounts.hs -main-is PrefixCounts
