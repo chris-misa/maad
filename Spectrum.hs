@@ -89,12 +89,13 @@ main = do
                       in (alpha, f)
                    )
 
-          diffs = head alphas : (
+          -- Note this always skips the first alpha. Should be ok if we have enough alpha samples...
+          diffs =
             zip alphas (tail alphas)
               & fmap (\((a1, _), (a2, f2)) -> (a1 > a2, (a2, f2)))
+              & dropWhile (not . fst) -- assume it only turns around once at beginning and once at end...
               & takeWhile fst
               & fmap snd
-            )
                    
 
       -- Filter alphas to stop as soon as alpha stops decreasing...
