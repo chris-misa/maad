@@ -79,13 +79,28 @@ main = do
                 --   & ((/ n) . sqrt)
       let taus = qs & VU.fromList & VU.map oneTau
 
+      let alphas = [1..VU.length taus - 2]
+            & fmap (\i ->
+                      let (_, prevTau) = taus VU.! (i - 1)
+                          (q, tau) = taus VU.! i
+                          (_, nextTau) = taus VU.! (i + 1)
+                          alpha = (nextTau - prevTau) / (2 * deltaQ)
+                          f = q * alpha - tau
+                      in (alpha, f)
+                   )
+
+          diffs = head alphas : (
+            zip alphas (tail alphas)
+              & fmap (\((a1, _), (a2, f2)) -> (a1 > a2, (a2, f2)))
+              & takeWhile fst
+              & fmap snd
+            )
+                   
+
+      -- Filter alphas to stop as soon as alpha stops decreasing...
+      
       putStrLn "alpha,f"
-      forM_ [1..VU.length taus - 2] $ \i -> do
-        let (_, prevTau) = taus VU.! (i - 1)
-            (q, tau) = taus VU.! i
-            (_, nextTau) = taus VU.! (i + 1)
-            alpha = (nextTau - prevTau) / (2 * deltaQ)
-            f = q * alpha - tau
+      forM_ diffs $ \(alpha, f) -> do
         putStrLn $ show alpha ++ "," ++ show f
     _ -> putStrLn usage
 
