@@ -41,7 +41,8 @@ usage :: String
 usage = "Spectrum <filepath>"
 
 deltaQ :: Double
-deltaQ = 0.02
+-- deltaQ = 0.02
+deltaQ = 0.1
 
 -- Min q based on theoretic range of normalicy of tauTilde(q)
 minQ :: Double
