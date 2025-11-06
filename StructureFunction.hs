@@ -79,7 +79,9 @@ oneMoment pm q pl =
         & PM.sliceAtLength (pl + 1)
         & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
 
-      total = fromIntegral $ length $ PM.leaves thisPl
+      -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
+      total = treeFold (+) 0.0 $ fmap (fromIntegral . snd) $ PM.leaves thisPl
+
 
       nextZ = nextPl
         & PM.leaves
