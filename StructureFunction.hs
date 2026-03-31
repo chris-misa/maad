@@ -47,7 +47,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath True head (const ())
       putStrLn "q,tauTilde,sd"
       forM_ qs $ \q -> do
         let moms = fmap (oneMoment pfxs q) prefixLengths

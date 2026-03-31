@@ -45,7 +45,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath True head (const ())
       putStrLn "q,pl,Z"
       forM_ qs $ \q -> do
         forM_ prefixLengths $ \pl -> do

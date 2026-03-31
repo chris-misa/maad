@@ -64,7 +64,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath True head (const ())
       let oneTau q = 
             let moms = fmap (oneMoment pfxs q) prefixLengths
                 tauTilde = moms
