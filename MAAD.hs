@@ -210,7 +210,7 @@ infoDim conf pfxs =
       entropies = prefixLengths
         & fmap oneEntropy
         & VU.fromList
-      pls = VU.generate (VU.length entropies) fromIntegral
+      pls = VU.generate (VU.length entropies) (negate . fromIntegral)
       (coef, _r2) = Reg.olsRegress [pls] entropies
   in coef VU.! 0
 
