@@ -12,6 +12,7 @@ mkShell {
       statistics
       wide-word
       treefold
+      optparse-applicative
     ]))
     emacs
     gnuplot

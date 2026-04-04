@@ -1,0 +1,173 @@
+{-
+ - Copyright: 2026 Chris Misa
+ - License: (See ./LICENSE)
+ -
+ - Entry point for running various multifractal analysis of IP address space data.
+ -
+ -}
+
+module MAAD where
+
+import System.Environment
+import Data.Function ((&))
+import Control.Arrow
+import Control.Monad
+
+import Data.Word
+import Data.Maybe
+
+import Options.Applicative -- optparse-applicative
+
+import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Char8 (ByteString)
+
+import qualified Data.List as L
+
+import qualified Data.Vector.Unboxed as VU
+import qualified Statistics.Sample as SS
+
+import Data.TreeFold (treeFold)
+
+-- Local imports
+import Common
+import PrefixMap (Prefix(..), PrefixMap)
+import qualified PrefixMap as PM
+
+deltaQ :: Double
+-- deltaQ = 0.02
+deltaQ = 0.1
+
+-- Min q based on theoretic range of normalicy of tauTilde(q)
+minQ :: Double
+minQ = -1.0 / 2
+
+-- Max q based on theoretic range of convergence of tauTilde(q) because it's less sensitive in the Legendre transform
+maxQ :: Double
+maxQ = 3.4
+
+qs :: [Double]
+qs = [minQ, minQ+deltaQ..maxQ]
+
+
+prefixLengths :: [Int]
+prefixLengths = [8..16]
+
+
+data Config = Config
+  { cfgFilepath :: String
+  , cfgOutPrefix :: String
+  , cfgStructure :: Bool
+  , cfgSpectrum :: Bool
+  , cfgDimensions :: Bool
+  , cfgCsv :: Bool
+  , cfgAddrCol :: Maybe Int
+  , cfgMeasureCol :: Maybe Int
+  , cfgSkipFirst :: Bool
+  }
+  deriving (Show)
+
+optparser :: Parser Config
+optparser = Config
+  <$> strOption ( long "input" <> metavar "FILEPATH" <> help "File to read (csv or one address on each line)." )
+  <*> strOption ( long "output" <> metavar "FILEPATH_PREFIX" <> help "Prefix for output files." )
+  <*> switch ( long "structure" <> short 't' <> help "Compute structure function (OUT_PREFIX_structure.csv).")
+  <*> switch ( long "spectrum" <> short 's' <> help "Compute multifractal spectrum (OUT_PREFIX_spectrum.csv).")
+  <*> switch ( long "dimensions" <> short 'd' <> help "Compute generalized dimensions (OUT_PREFIX_dimensions.csv).")
+  <*> switch ( long "csv" <> help "Input file is csv (with multiple columns that need to be parsed).")
+  <*> optional (option auto ( long "addr-col" <> metavar "COL" <> short 'a' <> help "If input is a csv file, this (zero-based) column contains the IP addresses to analyze. Default 0."))
+  <*> optional (option auto ( long "meas-col" <> metavar "COL" <> short 'm' <> help "If the input is a csv file, this (zero-based) column contains the measure associated with each IP address. Default 1."))
+  <*> switch ( long "skip-first" <> help "Skip the first (header) row before reading the data.")
+
+opts :: ParserInfo Config
+opts = info (optparser <**> helper)
+  ( fullDesc
+    <> progDesc "Compute a combination of different multifractal analyses of a given set of IP addresses, optimally based on a per-address measure."
+    <> header "MAAD - Multifractal Address-space Anomaly Detection"
+  )
+
+main :: IO ()
+main = do
+  conf <- execParser opts
+  if not (cfgStructure conf) && not (cfgSpectrum conf) && not (cfgDimensions conf)
+    then putStrLn "Must specify one of --structure, --spectrum, or --dimensions to compute."
+    else if (isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)
+    then putStrLn "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
+    else run conf
+
+run :: Config -> IO ()
+run conf = do
+  pfxs <-
+        if cfgCsv conf
+        then let addr_col = fromMaybe 0 (cfgAddrCol conf)
+                 meas_col = fromMaybe 1 (cfgMeasureCol conf)
+             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (flip (!!) addr_col) (read . B.unpack . flip (!!) meas_col)
+        else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
+  let oneTau q = 
+        let moms = fmap (oneMoment pfxs q) prefixLengths
+            n = fromIntegral (length moms)
+            tauTilde = moms
+              & fmap fst
+              & VU.fromList
+              & SS.mean
+            sd = moms
+              & fmap snd
+              & treeFold (+) 0.0
+              & ((/ n) . sqrt)
+        in (q, tauTilde, sd)
+
+      taus = qs & VU.fromList & VU.map oneTau
+
+  when (cfgStructure conf) $
+    putStrLn "Writing structure function..."
+
+  when (cfgSpectrum conf) $
+    putStrLn "Writing spectrum function..."
+
+  when (cfgDimensions conf) $
+    putStrLn "Writing generalized dimensions..."
+
+{-
+ - Compute the modified O&W estimator for a single prefix length and q pair
+ -
+ - Returns the estimated tau(q) and variance
+ -}
+oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
+oneMoment pm q pl =
+  let thisPl = pm
+        & PM.sliceAtLength pl
+        & PM.filter (\_ count -> count > 1) -- TODO: generalize the notion of singularity!!!
+
+      nextPl = pm
+        & PM.sliceAtLength (pl + 1)
+        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
+
+      -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
+      total = treeFold (+) 0.0 $ fmap (fromIntegral . snd) $ PM.leaves thisPl
+
+      nextZ = nextPl
+        & PM.leaves
+        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & treeFold (+) 0.0
+
+      thisZ = thisPl
+        & PM.leaves
+        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & treeFold (+) 0.0
+
+      oneD2 (pfx, count) =
+        let childSum = PM.children pfx
+              & fmap (PM.lookupDefault 0 nextPl)
+              & filter (> 0)
+              & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
+              & fmap ((** q) . (/ total) . fromIntegral)
+              & foldl1 (+)
+            mu = (fromIntegral count / total)
+        in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
+              
+      d2 = thisPl
+        & PM.leaves
+        & filter (\(pfx, _) -> PM.prefixLength pfx == pl)
+        & fmap oneD2
+        & treeFold (+) 0.0
+
+  in (logBase 2 thisZ - logBase 2 nextZ, d2)
