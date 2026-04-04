@@ -45,7 +45,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath True head (const ())
+      pfxs <- PM.fromFile filepath True head (const 1.0)
       putStrLn "q,pl,Z"
       forM_ qs $ \q -> do
         forM_ prefixLengths $ \pl -> do
@@ -53,11 +53,11 @@ main = do
           putStrLn $ show q ++ "," ++ show pl ++ "," ++ show z
     _ -> putStrLn usage
 
-getZ :: PrefixMap () -> Double -> Int -> Double
+getZ :: PrefixMap Double -> Double -> Int -> Double
 getZ pfxs q pl =
-  let total = treeFold (+) 0.0 $ fmap (fromIntegral . snd) $ PM.leaves pfxs
+  let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
   in pfxs
      & PM.sliceAtLength pl
      & PM.leaves
-     & fmap ((** q) . (/ total) . fromIntegral . snd)
+     & fmap ((** q) . (/ total) . snd)
      & treeFold (+) 0.0

@@ -43,20 +43,19 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath False head (const 1.0)
 
       let counts = pfxs
             & PM.sliceAtLength prefixLength
-            & PM.leaves -- :: [(Prefix, Int)]
+            & PM.leaves -- :: [(Prefix, Double)]
 
           n = counts
             & fmap snd
             & sum
-            & fromIntegral
 
           alphas = counts
             & fmap snd
-            & fmap (\c -> - logBase 2 (fromIntegral c / n) / fromIntegral prefixLength) -- :: [Double]
+            & fmap (\c -> - logBase 2 (c / n) / fromIntegral prefixLength) -- :: [Double]
           
           bins = [0.0, 0.01..1.5]
 

@@ -26,6 +26,7 @@ import Options.Applicative -- optparse-applicative
 
 import qualified Data.Vector.Unboxed as VU
 import qualified Statistics.Sample as SS
+import qualified Statistics.Regression as Reg
 
 import Data.TreeFold (treeFold)
 
@@ -181,7 +182,38 @@ runSpectrum conf taus = do
  -}
 runDimensions :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> IO ()
 runDimensions conf taus pfxs = do
-  error "Not yet implemented..."
+  let d1 = infoDim conf pfxs
+
+  -- Write to file
+  let outfile = cfgOutPrefix conf ++ "_dimensions.csv"
+  putStrLn $ "Writing generalized dimensions to " ++ outfile
+  withFile outfile WriteMode $ \hdl -> do
+    hPutStrLn hdl "q,dim"
+    hPutStrLn hdl ("1.0," ++ show d1)
+    VU.forM_ taus $ \(q, tauTilde, sd) -> do
+      let dq = tauTilde / (q - 1.0)
+      hPutStrLn hdl (show q ++ "," ++ show dq)
+
+infoDim :: Config -> PrefixMap Double -> Double
+infoDim conf pfxs =
+  -- lim_{r to 0} ( sum_i p_i * log(p_i) ) / log(r)
+  -- lim_{l to infty} (sum_i p_i * log(p_i)) / -l
+  let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
+      oneEntropy :: Int -> Double
+      oneEntropy pl = pfxs
+        & PM.sliceAtLength pl
+        & PM.leaves
+        & fmap (\(_, weight) ->
+                  let p = weight / total in p * logBase 2 p
+               )
+        & treeFold (+) 0.0
+      entropies = prefixLengths
+        & fmap oneEntropy
+        & VU.fromList
+      pls = VU.generate (VU.length entropies) fromIntegral
+      (coef, _r2) = Reg.olsRegress [pls] entropies
+  in coef VU.! 0
+
 
 {-
  - Compute the modified O&W estimator for a single prefix length and q pair
@@ -199,16 +231,16 @@ oneMoment pm q pl =
         & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
 
       -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
-      total = treeFold (+) 0.0 $ fmap (fromIntegral . snd) $ PM.leaves thisPl
+      total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
 
       nextZ = nextPl
         & PM.leaves
-        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
       thisZ = thisPl
         & PM.leaves
-        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
       oneD2 (pfx, count) =
@@ -216,9 +248,9 @@ oneMoment pm q pl =
               & fmap (PM.lookupDefault 0 nextPl)
               & filter (> 0)
               & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
-              & fmap ((** q) . (/ total) . fromIntegral)
+              & fmap ((** q) . (/ total))
               & foldl1 (+)
-            mu = (fromIntegral count / total)
+            mu = count / total
         in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
               
       d2 = thisPl

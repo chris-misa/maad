@@ -47,7 +47,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath True head (const ())
+      pfxs <- PM.fromFile filepath True head (const 1.0)
       putStrLn "q,tauTilde,sd"
       forM_ qs $ \q -> do
         let moms = fmap (oneMoment pfxs q) prefixLengths
@@ -69,7 +69,7 @@ main = do
  -
  - Returns the estimated tau(q) and variance
  -}
-oneMoment :: PrefixMap () -> Double -> Int -> (Double, Double)
+oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
 oneMoment pm q pl =
   let thisPl = pm
         & PM.sliceAtLength pl
@@ -80,17 +80,17 @@ oneMoment pm q pl =
         & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
 
       -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
-      total = treeFold (+) 0.0 $ fmap (fromIntegral . snd) $ PM.leaves thisPl
+      total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
 
 
       nextZ = nextPl
         & PM.leaves
-        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
       thisZ = thisPl
         & PM.leaves
-        & fmap ((** q) . (/ total) . fromIntegral . snd)
+        & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
       oneD2 (pfx, count) =
@@ -98,9 +98,9 @@ oneMoment pm q pl =
               & fmap (PM.lookupDefault 0 nextPl)
               & filter (> 0)
               & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
-              & fmap ((** q) . (/ total) . fromIntegral)
+              & fmap ((** q) . (/ total))
               & foldl1 (+)
-            mu = (fromIntegral count / total)
+            mu = count / total
         in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
               
       d2 = thisPl

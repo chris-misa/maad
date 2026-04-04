@@ -13,6 +13,7 @@ import Data.Function ((&))
 import Control.Arrow
 
 import Data.Word
+import Data.Maybe
 
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
@@ -35,17 +36,17 @@ main = do
   args <- getArgs
   case args of
     [numOuts, filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath False head (const 1.0)
       
       let addrs = PM.addresses pfxs
 
-          n = length addrs
+          n = fromIntegral (length addrs)
       
           res = addrs
             & fmap (id &&& getSingularity n pfxs)
             & L.sortOn (fst . snd)
             
-          putOne label ((addr, ()), (alpha, (intercept, r2, nPls))) =
+          putOne label ((addr, _), (alpha, (intercept, r2, nPls))) =
             putStrLn $ label ++ ":" ++
               B.unpack (ipv4_to_string addr) ++ "," ++
               show alpha ++ "," ++
@@ -57,7 +58,7 @@ main = do
         then do
         putStrLn "addr,alpha,intercept,r2,nPls"
         res
-          & fmap (\((addr, ()), (alpha, (intercept, r2, nPls))) -> putStrLn $
+          & fmap (\((addr, _), (alpha, (intercept, r2, nPls))) -> putStrLn $
                    B.unpack (ipv4_to_string addr) ++ "," ++
                    show alpha ++ "," ++
                    show intercept ++ "," ++
@@ -90,12 +91,12 @@ main = do
  - Report the singularity estimate of a given prefix w.r.t. the given prefix map
  - Returns (alpha, intercept, r2, number of prefix-lengths actually used)
  -}
-getSingularity :: Int -> PrefixMap () -> (Word32, ()) -> (Double, (Double, Double, Int))
+getSingularity :: Double -> PrefixMap Double -> (Word32, Double) -> (Double, (Double, Double, Int))
 getSingularity n pfxs (addr, _) =
   let oneLevel l =
         let pfx = PM.preserve_upper_bits32 (Prefix addr 32) l
-            (mu, _) = PM.lookup pfx pfxs
-            muNorm = fromIntegral mu  / fromIntegral n
+            mu = fromJust $ PM.lookup pfx pfxs
+            muNorm = mu  / n
         in (- logBase 2 muNorm, mu /= 1)
   
       muLogs = VU.generate 33 oneLevel & VU.takeWhile snd & VU.map fst

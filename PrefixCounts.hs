@@ -37,7 +37,7 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const ())
+      pfxs <- PM.fromFile filepath False head (const 1.0)
       putStrLn "pl,n"
       forM_ [0..32] $ \pl -> do
         let n = pfxs & PM.sliceAtLength pl & PM.leaves & length

@@ -6,6 +6,7 @@
  -}
 
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
 
 module PrefixMap where
 
@@ -100,14 +101,17 @@ children (Prefix pfx pl) =
 {-
  - PrefixMap type
  -}
-data PrefixMap a = Node !Prefix !Int (Maybe a) (PrefixMap a) (PrefixMap a) | EmptyMap
+-- data (Num a) => PrefixMap a = Node !Prefix !a (PrefixMap a) (PrefixMap a) | EmptyMap
+data PrefixMap a where
+  Node :: Num a => !Prefix -> !a -> PrefixMap a -> PrefixMap a -> PrefixMap a
+  EmptyMap :: PrefixMap a
 
 {-
  - Insert the given address into the prefix map assuming it is not in the map already
  -}
-insertNoDup :: PrefixMap a -> (Word32, a) -> PrefixMap a
-insertNoDup EmptyMap (addr, val) = Node (addressToPrefix addr) 1 (Just val) EmptyMap EmptyMap
-insertNoDup t@(Node pfx n oldVal left right) new@(addr, val) =
+insertNoDup :: Num a => PrefixMap a -> (Word32, a) -> PrefixMap a
+insertNoDup EmptyMap (addr, val) = Node (addressToPrefix addr) val EmptyMap EmptyMap
+insertNoDup t@(Node pfx oldVal left right) new@(addr, val) =
   let newPrefix = addressToPrefix addr
   in
     if newPrefix == pfx
@@ -119,28 +123,28 @@ insertNoDup t@(Node pfx n oldVal left right) new@(addr, val) =
       -- then error "Trying to add subprefix to a /32"
       -- else
       if get_bit32 newPrefix (prefixLength pfx + 1)
-      then Node pfx (n + 1) oldVal left (insertNoDup right new)
-      else Node pfx (n + 1) oldVal (insertNoDup left new) right
+      then Node pfx (oldVal + val) left (insertNoDup right new)
+      else Node pfx (oldVal + val) (insertNoDup left new) right
     else
       let !parentLength = first_diff_bit32 newPrefix pfx - 1
           !parentPfx = preserve_upper_bits32 pfx parentLength
-          newNode = Node newPrefix 1 (Just val) EmptyMap EmptyMap
+          newNode = Node newPrefix val EmptyMap EmptyMap
       in
         -- if parentLength >= 32
         -- then error "Common parent too long"
         -- else
         if get_bit32 newPrefix (parentLength + 1)
-        then Node parentPfx (n + 1) Nothing t newNode
-        else Node parentPfx (n + 1) Nothing newNode t
+        then Node parentPfx (oldVal + val) t newNode
+        else Node parentPfx (oldVal + val) newNode t
 
 {-
  - Look up a given prefix
  - Returns the address count and user-defined value of the target prefix or it's nearest child
  -}
-lookup :: Prefix -> PrefixMap a -> (Int, a)
-lookup targetPfx (Node pfx n valM left right) =
+lookup :: Prefix -> PrefixMap a -> Maybe a
+lookup targetPfx (Node pfx val left right) =
   if targetPfx == pfx || pfx `subprefix` targetPfx
-  then (n, fromJust valM)
+  then Just val
   else
     let pl = prefixLength pfx
     in
@@ -149,42 +153,56 @@ lookup targetPfx (Node pfx n valM left right) =
       else if get_bit32 targetPfx (pl + 1)
       then lookup targetPfx right
       else lookup targetPfx left
-lookup targetPfx EmptyMap = error $ "Prefix not found in map: " ++ show targetPfx
+lookup targetPfx EmptyMap = Nothing
 
 {-
- - Same as lookup but only returns the count of the found node with a default value if not found
+ - Same as lookup but only returns the value of the found node with a default value if not found
  -}
-lookupDefault :: Int -> PrefixMap a -> Prefix -> Int
-lookupDefault d (Node pfx n valM left right) targetPfx =
-  if targetPfx == pfx || subprefix pfx targetPfx
-  then n
-  else
-    let pl = prefixLength pfx
-    in
-      if pl >= 32
-      then lookupDefault d EmptyMap targetPfx
-      else if get_bit32 targetPfx (pl + 1)
-      then lookupDefault d right targetPfx
-      else lookupDefault d left targetPfx
-lookupDefault d EmptyMap targetPfx = d
+lookupDefault :: Num a => a -> PrefixMap a -> Prefix -> a
+lookupDefault d pfxs targetPfx =
+  case lookup targetPfx pfxs of
+    Just val -> val
+    Nothing -> d
 
+-- lookupDefault d (Node pfx val left right) targetPfx =
+--   if targetPfx == pfx || subprefix pfx targetPfx
+--   then val
+--   else
+--     let pl = prefixLength pfx
+--     in
+--       if pl >= 32
+--       then lookupDefault d EmptyMap targetPfx
+--       else if get_bit32 targetPfx (pl + 1)
+--       then lookupDefault d right targetPfx
+--       else lookupDefault d left targetPfx
+-- lookupDefault d EmptyMap targetPfx = d
 
 {-
  - Insert the given address into the prefix map, ignoring it if it is in the map already
  -}
-insert :: PrefixMap a -> (Word32, a) -> PrefixMap a
-insert m new@(addr, _) =
-  if lookupDefault 0 m (addressToPrefix addr) == 0
-  then insertNoDup m new
-  else m
+insert :: Num a => PrefixMap a -> (Word32, a) -> PrefixMap a
+insert pfxs new@(addr, _) =
+  case lookup (addressToPrefix addr) pfxs of
+    Just _ -> pfxs
+    Nothing -> insertNoDup pfxs new
+
+{-
+ - Insert the given address into the prefix map, ignoring it if it is in the map already
+ -}
+-- insert :: PrefixMap a -> (Word32, a) -> PrefixMap a
+-- insert m new@(addr, _) =
+--   if lookupDefault 0 m (addressToPrefix addr) == 0
+--   then insertNoDup m new
+--   else m
+-- ... nasty to implement in current setup...maybe we don't actually need it???
 
 
 {-
  - Remove all subtrees that start with a node for which f is true
  -}
-filter :: (Prefix -> Int -> Bool) -> PrefixMap a -> PrefixMap a
-filter f (Node pfx count val left right)
-  | f pfx count = Node pfx count val (filter f left) (filter f right)
+filter :: Num a => (Prefix -> a -> Bool) -> PrefixMap a -> PrefixMap a
+filter f (Node pfx val left right)
+  | f pfx val = Node pfx val (filter f left) (filter f right)
   | otherwise = EmptyMap
 filter _ EmptyMap = EmptyMap
 
@@ -193,31 +211,32 @@ filter _ EmptyMap = EmptyMap
  - May generate new prefixes at /targetL if they're not already in the prefix map.
  -}
 sliceAtLength :: Int -> PrefixMap a -> PrefixMap a
-sliceAtLength targetL (Node (Prefix addr l) count _ left right)
+sliceAtLength targetL (Node (Prefix addr l) val left right)
   | l >= targetL =
       let pfx = preserve_upper_bits32 (Prefix addr l) targetL
-      in Node pfx count Nothing EmptyMap EmptyMap
+      in Node pfx val EmptyMap EmptyMap
   | otherwise =
       let left' = sliceAtLength targetL left
           right' = sliceAtLength targetL right
-      in Node (Prefix addr l) count Nothing left' right'
+      in Node (Prefix addr l) val left' right'
 sliceAtLength _ EmptyMap = EmptyMap
 
 {-
  - Returns a list of leaves
  -}
-leaves :: PrefixMap a -> [(Prefix, Int)]
-leaves (Node pfx count _ EmptyMap EmptyMap) = [(pfx, count)]
-leaves (Node _ _ _ left right) = leaves left ++ leaves right
+leaves :: PrefixMap a -> [(Prefix, a)]
+leaves (Node pfx val EmptyMap EmptyMap) = [(pfx, val)]
+leaves (Node _ _ left right) = leaves left ++ leaves right
 leaves EmptyMap = []
 
 {-
  - Returns a list of the /32 addresses or leaves of the prefix map
  -}
 addresses :: PrefixMap a -> [(Word32, a)]
-addresses (Node (Prefix addr 32) 1 (Just val) EmptyMap EmptyMap) = [(addr, val)]
-addresses (Node _ _ _ EmptyMap EmptyMap) = error "Encountered malformed prefix map leaf"
-addresses (Node _ _ _ l r) = addresses l ++ addresses r
+addresses = fmap (first prefixToAddress) . leaves
+-- addresses (Node (Prefix addr 32) 1 (Just val) EmptyMap EmptyMap) = [(addr, val)]
+-- addresses (Node _ _ _ EmptyMap EmptyMap) = error "Encountered malformed prefix map leaf"
+-- addresses (Node _ _ _ l r) = addresses l ++ addresses r
 
 
 {-
@@ -227,7 +246,8 @@ addresses (Node _ _ _ l r) = addresses l ++ addresses r
  -   fst v is the number of addresses in k
  -   snd v is the result of getAux if prefixLength k == 32
  -}
-fromFile :: String -- the filepath to load
+fromFile :: Num a
+  => String -- the filepath to load
   -> Bool -- should we skip the first line?
   -> ([ByteString] -> ByteString) -- function that returns the IP address given a list of columns for a particular row
   -> ([ByteString] -> a) -- function that returns any auxiliary metadata to associate with the row's address
