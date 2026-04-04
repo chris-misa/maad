@@ -131,8 +131,7 @@ run conf = do
   when (cfgSpectrum conf) (runSpectrum conf taus)
 
   -- Compute and write the generalized dimensions if requested
-  when (cfgDimensions conf) $
-    putStrLn "Writing generalized dimensions..."
+  when (cfgDimensions conf) (runDimensions conf taus pfxs)
 
 {-
  - Write the structure function
@@ -150,6 +149,7 @@ runStructure conf taus = do
  -}
 runSpectrum :: Config -> VU.Vector (Double, Double, Double) -> IO ()
 runSpectrum conf taus = do
+  -- Estimate alpha and f(alpha) for each q
   let alphas = [1..VU.length taus - 2]
         & fmap (\i ->
                   let (_, prevTau, _) = taus VU.! (i - 1)
@@ -160,19 +160,28 @@ runSpectrum conf taus = do
                   in (alpha, f)
                )
 
+      -- Filter for range where alpha is monotonic decreasing
       -- Note this always skips the first alpha. Should be ok if we have enough alpha samples...
       diffs = zip alphas (tail alphas)
         & fmap (\((a1, _), (a2, f2)) -> (a1 > a2, (a2, f2)))
         & dropWhile (not . fst) -- assume it only turns around once at beginning and once at end...
         & takeWhile fst
         & fmap snd
-                   
+
+  -- Write to file
   let outfile = cfgOutPrefix conf ++ "_spectrum.csv"
   putStrLn $ "Writing multifractal spectrum to " ++ outfile
   withFile outfile WriteMode $ \hdl -> do
     hPutStrLn hdl "alpha,f"
     forM_ diffs $ \(alpha, f) -> do
       hPutStrLn hdl (show alpha ++ "," ++ show f)
+
+{-
+ - Compute and write generalized dimensions
+ -}
+runDimensions :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> IO ()
+runDimensions conf taus pfxs = do
+  error "Not yet implemented..."
 
 {-
  - Compute the modified O&W estimator for a single prefix length and q pair
