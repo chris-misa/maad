@@ -9,6 +9,7 @@
 module MAAD where
 
 import System.Environment
+import System.IO
 import Data.Function ((&))
 import Control.Arrow
 import Control.Monad
@@ -16,12 +17,12 @@ import Control.Monad
 import Data.Word
 import Data.Maybe
 
-import Options.Applicative -- optparse-applicative
-
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
 
 import qualified Data.List as L
+
+import Options.Applicative -- optparse-applicative
 
 import qualified Data.Vector.Unboxed as VU
 import qualified Statistics.Sample as SS
@@ -47,7 +48,6 @@ maxQ = 3.4
 
 qs :: [Double]
 qs = [minQ, minQ+deltaQ..maxQ]
-
 
 prefixLengths :: [Int]
 prefixLengths = [8..16]
@@ -94,14 +94,21 @@ main = do
     then putStrLn "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
     else run conf
 
+{-
+ - Run analysis and write results as described by the given configuration.
+ -}
 run :: Config -> IO ()
 run conf = do
+
+  -- Load in the addresses and optional associated "weights"
   pfxs <-
         if cfgCsv conf
         then let addr_col = fromMaybe 0 (cfgAddrCol conf)
                  meas_col = fromMaybe 1 (cfgMeasureCol conf)
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (flip (!!) addr_col) (read . B.unpack . flip (!!) meas_col)
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
+
+  -- Compute the structure function
   let oneTau q = 
         let moms = fmap (oneMoment pfxs q) prefixLengths
             n = fromIntegral (length moms)
@@ -117,14 +124,55 @@ run conf = do
 
       taus = qs & VU.fromList & VU.map oneTau
 
-  when (cfgStructure conf) $
-    putStrLn "Writing structure function..."
+  -- Write the structure function if requested
+  when (cfgStructure conf) (runStructure conf taus)
 
-  when (cfgSpectrum conf) $
-    putStrLn "Writing spectrum function..."
+  -- Compute and write the multifractal spectrum if requested
+  when (cfgSpectrum conf) (runSpectrum conf taus)
 
+  -- Compute and write the generalized dimensions if requested
   when (cfgDimensions conf) $
     putStrLn "Writing generalized dimensions..."
+
+{-
+ - Write the structure function
+ -}
+runStructure :: Config -> VU.Vector (Double, Double, Double) -> IO ()
+runStructure conf taus = do
+  let outfile = cfgOutPrefix conf ++ "_structure.csv"
+  putStrLn $ "Writing structure function to " ++ outfile
+  withFile outfile WriteMode $ \hdl -> do
+    hPutStrLn hdl "q,tauTilde,sd"
+    VU.forM_ taus $ \(q, tauTilde, sd) -> hPutStrLn hdl (show q ++ "," ++ show tauTilde ++ "," ++ show sd)
+
+{-
+ - Compute and write multifractal spectrum
+ -}
+runSpectrum :: Config -> VU.Vector (Double, Double, Double) -> IO ()
+runSpectrum conf taus = do
+  let alphas = [1..VU.length taus - 2]
+        & fmap (\i ->
+                  let (_, prevTau, _) = taus VU.! (i - 1)
+                      (q, tau, _) = taus VU.! i
+                      (_, nextTau, _) = taus VU.! (i + 1)
+                      alpha = (nextTau - prevTau) / (2 * deltaQ)
+                      f = q * alpha - tau
+                  in (alpha, f)
+               )
+
+      -- Note this always skips the first alpha. Should be ok if we have enough alpha samples...
+      diffs = zip alphas (tail alphas)
+        & fmap (\((a1, _), (a2, f2)) -> (a1 > a2, (a2, f2)))
+        & dropWhile (not . fst) -- assume it only turns around once at beginning and once at end...
+        & takeWhile fst
+        & fmap snd
+                   
+  let outfile = cfgOutPrefix conf ++ "_spectrum.csv"
+  putStrLn $ "Writing multifractal spectrum to " ++ outfile
+  withFile outfile WriteMode $ \hdl -> do
+    hPutStrLn hdl "alpha,f"
+    forM_ diffs $ \(alpha, f) -> do
+      hPutStrLn hdl (show alpha ++ "," ++ show f)
 
 {-
  - Compute the modified O&W estimator for a single prefix length and q pair
