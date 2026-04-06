@@ -16,10 +16,43 @@ Otherwise, find your own way to get `ghc` and required libraries listed in `shel
 
 # Usage
 
+The main executable produced is called `MAAD`:
+```
+$ ./MAAD  --help
+MAAD - Multifractal Address-space Anomaly Detection
+
+Usage: MAAD --input FILEPATH --output FILEPATH_PREFIX [-t|--structure]
+            [-s|--spectrum] [-d|--dimensions] [--csv] [-a|--addr-col COL]
+            [-m|--meas-col COL] [--skip-first]
+
+  Compute a combination of different multifractal analyses of a given set of IP
+  addresses, optimally based on a per-address measure.
+
+Available options:
+  --input FILEPATH         File to read (csv or one address on each line).
+  --output FILEPATH_PREFIX Prefix for output files.
+  -t,--structure           Compute structure function
+                           (OUT_PREFIX_structure.csv).
+  -s,--spectrum            Compute multifractal spectrum
+                           (OUT_PREFIX_spectrum.csv).
+  -d,--dimensions          Compute generalized dimensions
+                           (OUT_PREFIX_dimensions.csv).
+  --csv                    Input file is csv (with multiple columns that need to
+                           be parsed).
+  -a,--addr-col COL        If input is a csv file, this (zero-based) column
+                           contains the IP addresses to analyze. Default 0.
+  -m,--meas-col COL        If the input is a csv file, this (zero-based) column
+                           contains the measure associated with each IP address.
+                           Default 1.
+  --skip-first             Skip the first (header) row before reading the data.
+  -h,--help                Show this help text
+```
+
 To read from stdin, use "-" as input filepath.
 
 A couple example input files with lists of IPv4 addresses are included in `./test_data/` for testing.
 
+There are also single analysis executables as described below (though these may get phased out later).
 
 ## Multifractal Spectrum
 
