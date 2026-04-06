@@ -52,7 +52,7 @@ To read from stdin, use "-" as input filepath.
 
 A couple example input files with lists of IPv4 addresses are included in `./test_data/` for testing.
 
-There are also single analysis executables as described below (though these may get phased out later).
+There are also single analysis executables that write the resulting csv to stdout as described below (though these may get phased out later).
 
 ## Multifractal Spectrum
 
