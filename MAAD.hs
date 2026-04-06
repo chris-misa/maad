@@ -36,16 +36,15 @@ import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 deltaQ :: Double
--- deltaQ = 0.02
-deltaQ = 0.1
+deltaQ = 1.0 / 8.0
 
 -- Min q based on theoretic range of normalicy of tauTilde(q)
 minQ :: Double
-minQ = -1.0 / 2
+minQ = -1.0 / 2.0
 
 -- Max q based on theoretic range of convergence of tauTilde(q) because it's less sensitive in the Legendre transform
 maxQ :: Double
-maxQ = 3.4
+maxQ = 3.5
 
 qs :: [Double]
 qs = [minQ, minQ+deltaQ..maxQ]
@@ -190,9 +189,12 @@ runDimensions conf taus pfxs = do
   withFile outfile WriteMode $ \hdl -> do
     hPutStrLn hdl "q,dim"
     hPutStrLn hdl ("1.0," ++ show d1)
-    VU.forM_ taus $ \(q, tauTilde, sd) -> do
-      let dq = tauTilde / (q - 1.0)
-      hPutStrLn hdl (show q ++ "," ++ show dq)
+    taus
+      & VU.filter (\(q, _, _) -> q == 0.0 || q == 2.0)
+      & VU.mapM_ (\(q, tauTilde, sd) -> do
+                     let dq = tauTilde / (q - 1.0)
+                     hPutStrLn hdl (show q ++ "," ++ show dq)
+                 )
 
 infoDim :: Config -> PrefixMap Double -> Double
 infoDim conf pfxs =
