@@ -108,6 +108,10 @@ run conf = do
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (flip (!!) addr_col) (read . B.unpack . flip (!!) meas_col)
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
 
+  let !minAtomicLength = PM.firstAtomicLength pfxs
+
+  putStrLn $ "Min atomic length: " ++ show minAtomicLength
+
   -- Compute the structure function
   let oneTau q = 
         let moms = fmap (oneMoment pfxs q) prefixLengths

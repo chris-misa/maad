@@ -218,10 +218,27 @@ leaves EmptyMap = []
  -}
 addresses :: PrefixMap a -> [(Word32, a)]
 addresses = fmap (first prefixToAddress) . leaves
--- addresses (Node (Prefix addr 32) 1 (Just val) EmptyMap EmptyMap) = [(addr, val)]
--- addresses (Node _ _ _ EmptyMap EmptyMap) = error "Encountered malformed prefix map leaf"
--- addresses (Node _ _ _ l r) = addresses l ++ addresses r
 
+{-
+ - Returns the shortest prefix length where at least one prefix has only one address.
+ -}
+firstAtomicLength :: PrefixMap a -> Int
+firstAtomicLength EmptyMap = 33
+firstAtomicLength (Node pfx _ _ left right) =
+  -- Because atomic prefixes are always leaves, have to inspect children from parent's prefix length...
+  case (left, right) of
+    (Node _ 1 _ _ _, _) -> prefixLength pfx + 1
+    (_, Node _ 1 _ _ _) -> prefixLength pfx + 1
+    _ -> firstAtomicLength left `min` firstAtomicLength right
+
+{-
+ - Returns the shortest prefix length where at least one prefix "spilled-over".
+ - That is it assigned a child to have less than delta free space.
+ -}
+firstSpilloverLength :: Double -> PrefixMap a -> Int
+firstSpilloverLength _ EmptyMap = 32
+firstSpillOverLength delta (Node pfx count _ left right) = undefined
+  -- also wants bfs...
 
 {-
  - Reads a csv-type file and builds a PrefixMap.
