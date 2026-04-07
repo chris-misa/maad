@@ -62,6 +62,7 @@ data Config = Config
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
   , cfgSkipFirst :: Bool
+  , cfgSpilloverThresh :: Double
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -77,6 +78,7 @@ optparser = Config
   <*> optional (option auto ( long "addr-col" <> metavar "COL" <> short 'a' <> help "If input is a csv file, this (zero-based) column contains the IP addresses to analyze. Default 0."))
   <*> optional (option auto ( long "meas-col" <> metavar "COL" <> short 'm' <> help "If the input is a csv file, this (zero-based) column contains the measure associated with each IP address. Default 1."))
   <*> switch ( long "skip-first" <> help "Skip the first (header) row before reading the data.")
+  <*> option auto ( long "spillover-threshold" <> metavar "DELTA" <> help "Threshold for determining when a prefix is estimated to have spilled over. Mostly only important for determining max prefix length." <> value defaultSpilloverThreshold <> showDefault )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -110,7 +112,7 @@ run conf = do
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
 
   let !firstAtomicLength = PM.firstAtomicLength pfxs
-  let !firstSpilloverLength = PM.firstSpilloverLength defaultSpilloverThreshold pfxs
+  let !firstSpilloverLength = PM.firstSpilloverLength (cfgSpilloverThresh conf) pfxs
 
   putStrLn $ "First atomic length: " ++ show firstAtomicLength
   putStrLn $ "First spill-over length: " ++ show firstSpilloverLength
