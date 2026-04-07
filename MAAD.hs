@@ -52,10 +52,6 @@ maxQ = 3.5
 qs :: [Double]
 qs = [minQ, minQ+deltaQ..maxQ]
 
-prefixLengths :: [Int]
-prefixLengths = [8..16]
-
-
 data Config = Config
   { cfgFilepath :: String
   , cfgOutPrefix :: String
@@ -66,6 +62,7 @@ data Config = Config
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
   , cfgSkipFirst :: Bool
+  , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
 
@@ -80,6 +77,7 @@ optparser = Config
   <*> optional (option auto ( long "addr-col" <> metavar "COL" <> short 'a' <> help "If input is a csv file, this (zero-based) column contains the IP addresses to analyze. Default 0."))
   <*> optional (option auto ( long "meas-col" <> metavar "COL" <> short 'm' <> help "If the input is a csv file, this (zero-based) column contains the measure associated with each IP address. Default 1."))
   <*> switch ( long "skip-first" <> help "Skip the first (header) row before reading the data.")
+  <*> pure []
 
 opts :: ParserInfo Config
 opts = info (optparser <**> helper)
@@ -116,10 +114,11 @@ run conf = do
 
   putStrLn $ "First atomic length: " ++ show firstAtomicLength
   putStrLn $ "First spill-over length: " ++ show firstSpilloverLength
+  let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstSpilloverLength] }
 
   -- Compute the structure function
   let oneTau q = 
-        let moms = fmap (oneMoment pfxs q) prefixLengths
+        let moms = fmap (oneMoment pfxs q) (cfgPrefixLengths conf')
             n = fromIntegral (length moms)
             tauTilde = moms
               & fmap fst
@@ -134,13 +133,13 @@ run conf = do
       taus = qs & VU.fromList & VU.map oneTau
 
   -- Write the structure function if requested
-  when (cfgStructure conf) (runStructure conf taus)
+  when (cfgStructure conf') (runStructure conf' taus)
 
   -- Compute and write the multifractal spectrum if requested
-  when (cfgSpectrum conf) (runSpectrum conf taus)
+  when (cfgSpectrum conf') (runSpectrum conf' taus)
 
   -- Compute and write the generalized dimensions if requested
-  when (cfgDimensions conf) (runDimensions conf taus pfxs)
+  when (cfgDimensions conf') (runDimensions conf' taus pfxs)
 
 {-
  - Write the structure function
@@ -218,7 +217,7 @@ infoDim conf pfxs =
                   let p = weight / total in p * logBase 2 p
                )
         & treeFold (+) 0.0
-      entropies = prefixLengths
+      entropies = cfgPrefixLengths conf
         & fmap oneEntropy
         & VU.fromList
       pls = VU.generate (VU.length entropies) (negate . fromIntegral)
