@@ -236,9 +236,17 @@ firstAtomicLength (Node pfx _ _ left right) =
  - That is it assigned a child to have less than delta free space.
  -}
 firstSpilloverLength :: Double -> PrefixMap a -> Int
-firstSpilloverLength _ EmptyMap = 32
-firstSpillOverLength delta (Node pfx count _ left right) = undefined
-  -- also wants bfs...
+firstSpilloverLength _ EmptyMap = 33
+firstSpilloverLength delta (Node pfx _ _ left right) =
+  let pl = prefixLength pfx in
+  case (left, right) of
+    (Node _ count _ _ _, _)
+      | fromIntegral count / (2.0 ** fromIntegral (32 - (pl + 1))) >= 1.0 - delta
+        -> pl
+    (_, Node _ count _ _ _)
+      | fromIntegral count / (2.0 ** fromIntegral (32 - (pl + 1))) >= 1.0 - delta
+        -> pl
+    _ -> firstSpilloverLength delta left `min` firstSpilloverLength delta right
 
 {-
  - Reads a csv-type file and builds a PrefixMap.

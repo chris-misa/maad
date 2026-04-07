@@ -35,6 +35,9 @@ import Common
 import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
+defaultSpilloverThreshold :: Double
+defaultSpilloverThreshold = 0.05
+
 deltaQ :: Double
 deltaQ = 1.0 / 8.0
 
@@ -108,9 +111,11 @@ run conf = do
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (flip (!!) addr_col) (read . B.unpack . flip (!!) meas_col)
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
 
-  let !minAtomicLength = PM.firstAtomicLength pfxs
+  let !firstAtomicLength = PM.firstAtomicLength pfxs
+  let !firstSpilloverLength = PM.firstSpilloverLength defaultSpilloverThreshold pfxs
 
-  putStrLn $ "Min atomic length: " ++ show minAtomicLength
+  putStrLn $ "First atomic length: " ++ show firstAtomicLength
+  putStrLn $ "First spill-over length: " ++ show firstSpilloverLength
 
   -- Compute the structure function
   let oneTau q = 
