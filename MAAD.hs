@@ -160,7 +160,7 @@ run conf = do
       taus = qs & VU.fromList & VU.map oneTau
 
   -- Write metadata
-  writeMetadata conf' 
+  writeMetadata conf' pfxs
   
   -- Write the structure function if requested
   when (cfgStructure conf') (runStructure conf' taus)
@@ -174,8 +174,8 @@ run conf = do
 {-
  - Write some metadata to keep track of config and parameters that were auto-generated here
  -}
-writeMetadata :: Config -> IO ()
-writeMetadata conf = do
+writeMetadata :: Config -> PrefixMap Double -> IO ()
+writeMetadata conf pfxs = do
   let outfile = cfgOutPrefix conf ++ "_metadata.csv"
   putStrLn $ "Writing metadata to " ++ outfile
   withFile outfile WriteMode $ \hdl -> do
@@ -183,6 +183,7 @@ writeMetadata conf = do
     hPutStrLn hdl $ "input," ++ cfgFilepath conf
     hPutStrLn hdl $ "min_prefix_length," ++ show (foldl1 min (cfgPrefixLengths conf))
     hPutStrLn hdl $ "max_prefix_length," ++ show (foldl1 max (cfgPrefixLengths conf))
+    hPutStrLn hdl $ "total_addrs," ++ show (length (PM.leaves pfxs))
 
 {-
  - Write the structure function
