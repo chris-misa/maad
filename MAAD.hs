@@ -69,16 +69,38 @@ data Config = Config
 
 optparser :: Parser Config
 optparser = Config
-  <$> strOption ( long "input" <> metavar "FILEPATH" <> help "File to read (csv or one address on each line)." )
-  <*> strOption ( long "output" <> metavar "FILEPATH_PREFIX" <> help "Prefix for output files." )
-  <*> switch ( long "structure" <> short 't' <> help "Compute structure function (OUT_PREFIX_structure.csv).")
-  <*> switch ( long "spectrum" <> short 's' <> help "Compute multifractal spectrum (OUT_PREFIX_spectrum.csv).")
-  <*> switch ( long "dimensions" <> short 'd' <> help "Compute generalized dimensions (OUT_PREFIX_dimensions.csv).")
-  <*> switch ( long "csv" <> help "Input file is csv (with multiple columns that need to be parsed).")
-  <*> optional (option auto ( long "addr-col" <> metavar "COL" <> short 'a' <> help "If input is a csv file, this (zero-based) column contains the IP addresses to analyze. Default 0."))
-  <*> optional (option auto ( long "meas-col" <> metavar "COL" <> short 'm' <> help "If the input is a csv file, this (zero-based) column contains the measure associated with each IP address. Default 1."))
-  <*> switch ( long "skip-first" <> help "Skip the first (header) row before reading the data.")
-  <*> option auto ( long "spillover-threshold" <> metavar "DELTA" <> help "Threshold for determining when a prefix is estimated to have spilled over. Mostly only important for determining max prefix length." <> value defaultSpilloverThreshold <> showDefault )
+  <$> strOption ( long "input"
+                  <> metavar "FILEPATH"
+                  <> help "File to read (csv or one address on each line)."
+                )
+  <*> strOption ( long "output"
+                  <> metavar "FILEPATH_PREFIX"
+                  <> help "Prefix for output files."
+                )
+  <*> switch ( long "structure" <> short 't'
+               <> help "Compute structure function (OUT_PREFIX_structure.csv)."
+             )
+  <*> switch ( long "spectrum" <> short 's'
+               <> help "Compute multifractal spectrum (OUT_PREFIX_spectrum.csv)."
+             )
+  <*> switch ( long "dimensions" <> short 'd'
+               <> help "Compute generalized dimensions (OUT_PREFIX_dimensions.csv)."
+             )
+  <*> switch ( long "csv"
+               <> help "Input file is csv (with multiple columns that need to be parsed)."
+             )
+  <*> optional (option auto ( long "addr-col" <> metavar "COL" <> short 'a'
+                              <> help "If input is a csv file, this (zero-based) column contains the IP addresses to analyze. Default to column 0."
+                            ))
+  <*> optional (option auto ( long "meas-col" <> metavar "COL" <> short 'm'
+                              <> help "If the input is a csv file, this (zero-based) column contains the measure associated with each IP address. If not specified, each address will receive constant measure 1.0 (even if --csv is specified)."))
+  <*> switch ( long "skip-first"
+               <> help "Skip the first (header) row before reading the data."
+             )
+  <*> option auto ( long "spillover-threshold" <> metavar "DELTA"
+                    <> value defaultSpilloverThreshold <> showDefault
+                    <> help "Threshold for determining when a prefix is estimated to have spilled over. Mostly only important for determining max prefix length."
+                  )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -106,9 +128,12 @@ run conf = do
   -- Load in the addresses and optional associated "weights"
   pfxs <-
         if cfgCsv conf
-        then let addr_col = fromMaybe 0 (cfgAddrCol conf)
-                 meas_col = fromMaybe 1 (cfgMeasureCol conf)
-             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (flip (!!) addr_col) (read . B.unpack . flip (!!) meas_col)
+        then let extract_addr = flip (!!) (fromMaybe 0 (cfgAddrCol conf)) -- default to column 0
+                 extract_meas =
+                   case cfgMeasureCol conf of
+                     Just col -> read . B.unpack . flip (!!) col
+                     Nothing -> const 1.0 -- default to constant 1.0 for each address
+             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) extract_addr extract_meas
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) head (const 1.0)
 
   let !firstAtomicLength = PM.firstAtomicLength pfxs
