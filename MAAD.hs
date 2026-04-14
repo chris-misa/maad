@@ -159,6 +159,9 @@ run conf = do
 
       taus = qs & VU.fromList & VU.map oneTau
 
+  -- Write metadata
+  writeMetadata conf' 
+  
   -- Write the structure function if requested
   when (cfgStructure conf') (runStructure conf' taus)
 
@@ -167,6 +170,19 @@ run conf = do
 
   -- Compute and write the generalized dimensions if requested
   when (cfgDimensions conf') (runDimensions conf' taus pfxs)
+
+{-
+ - Write some metadata to keep track of config and parameters that were auto-generated here
+ -}
+writeMetadata :: Config -> IO ()
+writeMetadata conf = do
+  let outfile = cfgOutPrefix conf ++ "_metadata.csv"
+  putStrLn $ "Writing metadata to " ++ outfile
+  withFile outfile WriteMode $ \hdl -> do
+    hPutStrLn hdl "key,value"
+    hPutStrLn hdl $ "input," ++ cfgFilepath conf
+    hPutStrLn hdl $ "min_prefix_length," ++ show (foldl1 min (cfgPrefixLengths conf))
+    hPutStrLn hdl $ "max_prefix_length," ++ show (foldl1 max (cfgPrefixLengths conf))
 
 {-
  - Write the structure function
