@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-
  - Copyright: 2026 Chris Misa
@@ -20,10 +21,10 @@ import Control.Monad
 import Data.Word
 import Data.Maybe
 
+import Data.Aeson ((.=), Value, encode, object)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
-
-import qualified Data.List as L
+import qualified Data.ByteString.Lazy.Char8 as BL8
 
 import Options.Applicative -- optparse-applicative
 
@@ -344,83 +345,65 @@ emitJsonResults :: Config -> Metadata -> Maybe [(Double, Double, Double)] -> May
 emitJsonResults conf metadata structureRows spectrumRows dimensionRows = do
   let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows
   if cfgOutPrefix conf == "-"
-  then putStrLn payload
+  then BL8.putStrLn payload
   else do
     let outfile = cfgOutPrefix conf ++ ".json"
     hPutStrLn stderr $ "Writing json results to " ++ outfile
-    writeFile outfile (payload ++ "\n")
+    BL8.writeFile outfile (payload <> "\n")
 
-encodeResultsJson :: Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> String
+encodeResultsJson :: Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> BL8.ByteString
 encodeResultsJson metadata structureRows spectrumRows dimensionRows =
-  jsonObject $
-    [ ("schemaVersion", "1")
-    , ("metadata", encodeMetadataJson metadata)
-    ]
-    ++ maybe [] (\rows -> [("structure", encodeStructureRowsJson rows)]) structureRows
-    ++ maybe [] (\rows -> [("spectrum", encodeSpectrumRowsJson rows)]) spectrumRows
-    ++ maybe [] (\rows -> [("dimensions", encodeDimensionRowsJson rows)]) dimensionRows
+  encode $
+    object $
+      [ "schemaVersion" .= (1 :: Int)
+      , "metadata" .= encodeMetadataJson metadata
+      ]
+      ++ maybe [] (\rows -> ["structure" .= encodeStructureRowsJson rows]) structureRows
+      ++ maybe [] (\rows -> ["spectrum" .= encodeSpectrumRowsJson rows]) spectrumRows
+      ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) dimensionRows
 
-encodeMetadataJson :: Metadata -> String
+encodeMetadataJson :: Metadata -> Value
 encodeMetadataJson metadata =
-  jsonObject
-    [ ("input", jsonString (metaInput metadata))
-    , ("minPrefixLength", show (metaMinPrefixLength metadata))
-    , ("maxPrefixLength", show (metaMaxPrefixLength metadata))
-    , ("totalAddrs", show (metaTotalAddrs metadata))
+  object
+    [ "input" .= metaInput metadata
+    , "minPrefixLength" .= metaMinPrefixLength metadata
+    , "maxPrefixLength" .= metaMaxPrefixLength metadata
+    , "totalAddrs" .= metaTotalAddrs metadata
     ]
 
-encodeStructureRowsJson :: [(Double, Double, Double)] -> String
+encodeStructureRowsJson :: [(Double, Double, Double)] -> [Value]
 encodeStructureRowsJson rows =
-  jsonArray $
-    fmap (\(q, tauTilde, sd) ->
-            jsonObject
-              [ ("q", show q)
-              , ("tauTilde", show tauTilde)
-              , ("sd", show sd)
-              ]
-         ) rows
+  fmap
+    (\(q, tauTilde, sd) ->
+      object
+        [ "q" .= q
+        , "tauTilde" .= tauTilde
+        , "sd" .= sd
+        ]
+    )
+    rows
 
-encodeSpectrumRowsJson :: [(Double, Double)] -> String
+encodeSpectrumRowsJson :: [(Double, Double)] -> [Value]
 encodeSpectrumRowsJson rows =
-  jsonArray $
-    fmap (\(alpha, f) ->
-            jsonObject
-              [ ("alpha", show alpha)
-              , ("f", show f)
-              ]
-         ) rows
+  fmap
+    (\(alpha, f) ->
+      object
+        [ "alpha" .= alpha
+        , "f" .= f
+        ]
+    )
+    rows
 
-encodeDimensionRowsJson :: [(Double, Double)] -> String
+encodeDimensionRowsJson :: [(Double, Double)] -> [Value]
 encodeDimensionRowsJson rows =
-  jsonArray $
-    fmap (\(q, dim) ->
-            jsonObject
-              [ ("q", show q)
-              , ("dim", show dim)
-              ]
-         ) rows
-
-jsonObject :: [(String, String)] -> String
-jsonObject fields =
-  "{"
-    ++ L.intercalate "," (fmap (\(k, v) -> jsonString k ++ ":" ++ v) fields)
-    ++ "}"
-
-jsonArray :: [String] -> String
-jsonArray values = "[" ++ L.intercalate "," values ++ "]"
-
-jsonString :: String -> String
-jsonString str = "\"" ++ concatMap escapeJson str ++ "\""
-
-escapeJson :: Char -> String
-escapeJson '"' = "\\\""
-escapeJson '\\' = "\\\\"
-escapeJson '\b' = "\\b"
-escapeJson '\f' = "\\f"
-escapeJson '\n' = "\\n"
-escapeJson '\r' = "\\r"
-escapeJson '\t' = "\\t"
-escapeJson c = [c]
+  fmap
+    (\(q, dim) ->
+      object
+        [ "q" .= q
+        , "dim" .= dim
+        ]
+    )
+    rows
 
 extractSingleAddr :: [ByteString] -> ByteString
 extractSingleAddr (addr:_) = addr

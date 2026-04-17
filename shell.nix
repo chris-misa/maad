@@ -8,6 +8,7 @@ mkShell {
   buildInputs = [
     (haskellPackages.ghcWithPackages (pkgs: with pkgs; [
       bytestring
+      aeson
       unordered-containers
       statistics
       wide-word
