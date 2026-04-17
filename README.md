@@ -30,7 +30,7 @@ Usage: MAAD --input FILEPATH --output FILEPATH_PREFIX [-t|--structure]
 
 Available options:
   --input FILEPATH         File to read (csv or one address on each line).
-  --output FILEPATH_PREFIX Prefix for output files, or "-" for stdout.
+  --output FILEPATH_PREFIX Prefix for output files.
   --format FORMAT          Output format: csv or json. Default: csv
   -t,--structure           Compute structure function
                            (OUT_PREFIX_structure.csv).
@@ -49,7 +49,7 @@ Available options:
   -h,--help                Show this help text
 ```
 
-To read from stdin, use `--input -`.
+To read/write stdin/out use a `-`. e.g. `--input -`
 
 To write a single csv analysis to stdout, use `--output - --format csv`.
 
