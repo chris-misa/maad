@@ -75,12 +75,26 @@ data Config = Config
   }
   deriving (Show)
 
+requestedAnalysisCount :: Config -> Int
+requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions ]
+  & fmap (\f -> if f conf then 1 else 0)
+  & foldl1 (+)
+
 data Metadata = Metadata
   { metaInput :: String
   , metaMinPrefixLength :: Int
   , metaMaxPrefixLength :: Int
   , metaTotalAddrs :: Int
   }
+
+parseOutputFormat :: String -> Either String OutputFormat
+parseOutputFormat "csv" = Right OutputCsv
+parseOutputFormat "json" = Right OutputJson
+parseOutputFormat _ = Left "FORMAT must be one of: csv, json"
+
+formatName :: OutputFormat -> String
+formatName OutputCsv = "csv"
+formatName OutputJson = "json"
 
 optparser :: Parser Config
 optparser = Config
@@ -92,13 +106,12 @@ optparser = Config
                   <> metavar "FILEPATH_PREFIX"
                   <> help "Prefix for output files, or - for stdout."
                 )
-  <*> option (eitherReader parseOutputFormat)
-        ( long "format"
-          <> metavar "FORMAT"
-          <> value OutputCsv
-          <> showDefaultWith formatName
-          <> help "Output format: csv or json."
-                )
+  <*> option (eitherReader parseOutputFormat) ( long "format"
+                                                <> metavar "FORMAT"
+                                                <> value OutputCsv
+                                                <> showDefaultWith formatName
+                                                <> help "Output format: csv or json."
+                                              )
   <*> switch ( long "structure" <> short 't'
                <> help "Compute structure function (OUT_PREFIX_structure.csv)."
              )
@@ -132,43 +145,35 @@ opts = info (optparser <**> helper)
     <> header "MAAD - Multifractal Address-space Anomaly Detection"
   )
 
-main :: IO ()
-main = do
-  conf <- execParser opts
-  if not (cfgStructure conf) && not (cfgSpectrum conf) && not (cfgDimensions conf)
-    then dieWith "Must specify one of --structure, --spectrum, or --dimensions to compute."
-    else if (isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)
-    then dieWith "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
-    else if cfgOutPrefix conf == "-" && cfgFormat conf == OutputCsv && requestedAnalysisCount conf > 1
-    then dieWith "CSV stdout only supports a single requested analysis; use --format json or a file prefix."
-    else run conf
-
-parseOutputFormat :: String -> Either String OutputFormat
-parseOutputFormat "csv" = Right OutputCsv
-parseOutputFormat "json" = Right OutputJson
-parseOutputFormat _ = Left "FORMAT must be one of: csv, json"
-
-formatName :: OutputFormat -> String
-formatName OutputCsv = "csv"
-formatName OutputJson = "json"
-
 dieWith :: String -> IO ()
 dieWith msg = hPutStrLn stderr msg >> exitFailure
 
-requestedAnalysisCount :: Config -> Int
-requestedAnalysisCount conf =
-  length $
-    filter id
-      [ cfgStructure conf
-      , cfgSpectrum conf
-      , cfgDimensions conf
-      ]
+main :: IO ()
+main = do
+  conf <- execParser opts
+
+  -- Verify that the configuration given in the arguments is valid
+  when (requestedAnalysisCount conf <= 0) $
+    dieWith "Must specify one of --structure, --spectrum, or --dimensions to compute."
+    
+  when ((isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)) $
+    dieWith "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
+
+  when (cfgOutPrefix conf == "-" && cfgFormat conf == OutputCsv && requestedAnalysisCount conf > 1) $
+    dieWith "CSV stdout only supports a single requested analysis; use --format json or a file prefix."
+
+  -- Run with verified configuration
+  run conf
 
 {-
  - Run analysis and write results as described by the given configuration.
  -}
 run :: Config -> IO ()
 run conf = do
+
+  let extractSingleAddr :: [ByteString] -> ByteString
+      extractSingleAddr (addr:_) = addr
+      extractSingleAddr [] = error "Expected at least one column in each input row"
 
   -- Load in the addresses and optional associated "weights"
   pfxs <-
@@ -210,66 +215,59 @@ run conf = do
 
       taus = qs & VU.fromList & VU.map oneTau
 
+      -- Compute the other stuff if requested
       structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
       spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
 
+  -- Write output to csv files, std out, or json
   emitResults conf' metadata structureRows spectrumRows dimensionRows
 
 {-
- - Emit results in the requested output format.
+ - Compute the modified O&W estimator for a single prefix length and q pair
+ -
+ - Returns the estimated tau(q) and variance
  -}
-emitResults :: Config -> Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> IO ()
-emitResults conf metadata structureRows spectrumRows dimensionRows =
-  case cfgFormat conf of
-    OutputCsv -> emitCsvResults conf metadata structureRows spectrumRows dimensionRows
-    OutputJson -> emitJsonResults conf metadata structureRows spectrumRows dimensionRows
+oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
+oneMoment pm q pl =
+  let thisPl = pm
+        & PM.sliceAtLength pl
+        & PM.filter (\_ count -> count > 1) -- TODO: generalize the notion of singularity!!!
 
-{-
- - Write some metadata to keep track of config and parameters that were auto-generated here
- -}
-writeMetadata :: Config -> Metadata -> IO ()
-writeMetadata conf metadata = do
-  let outfile = cfgOutPrefix conf ++ "_metadata.csv"
-  hPutStrLn stderr $ "Writing metadata to " ++ outfile
-  withFile outfile WriteMode $ \hdl -> do
-    hPutStrLn hdl "key,value"
-    hPutStrLn hdl $ "input," ++ metaInput metadata
-    hPutStrLn hdl $ "min_prefix_length," ++ show (metaMinPrefixLength metadata)
-    hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
-    hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
+      nextPl = pm
+        & PM.sliceAtLength (pl + 1)
+        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
 
-{-
- - Emit csv results to stdout or files.
- -}
-emitCsvResults :: Config -> Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> IO ()
-emitCsvResults conf metadata structureRows spectrumRows dimensionRows =
-  if cfgOutPrefix conf == "-"
-  then
-    case () of
-      _ | cfgStructure conf -> maybe (return ()) (writeStructureCsv stdout) structureRows
-        | cfgSpectrum conf -> maybe (return ()) (writeSpectrumCsv stdout) spectrumRows
-        | otherwise -> maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
-  else do
-    writeMetadata conf metadata
-    maybe (return ()) (writeStructureFile conf) structureRows
-    maybe (return ()) (writeSpectrumFile conf) spectrumRows
-    maybe (return ()) (writeDimensionsFile conf) dimensionRows
+      -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
+      total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
 
-{-
- - Write the structure function
- -}
-writeStructureFile :: Config -> [(Double, Double, Double)] -> IO ()
-writeStructureFile conf rows = do
-  let outfile = cfgOutPrefix conf ++ "_structure.csv"
-  hPutStrLn stderr $ "Writing structure function to " ++ outfile
-  withFile outfile WriteMode (\hdl -> writeStructureCsv hdl rows)
+      nextZ = nextPl
+        & PM.leaves
+        & fmap ((** q) . (/ total) . snd)
+        & treeFold (+) 0.0
 
-writeStructureCsv :: Handle -> [(Double, Double, Double)] -> IO ()
-writeStructureCsv hdl rows = do
-  hPutStrLn hdl "q,tauTilde,sd"
-  forM_ rows $ \(q, tauTilde, sd) ->
-    hPutStrLn hdl (show q ++ "," ++ show tauTilde ++ "," ++ show sd)
+      thisZ = thisPl
+        & PM.leaves
+        & fmap ((** q) . (/ total) . snd)
+        & treeFold (+) 0.0
+
+      oneD2 (pfx, count) =
+        let childSum = PM.children pfx
+              & fmap (PM.lookupDefault 0 nextPl)
+              & filter (> 0)
+              & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
+              & fmap ((** q) . (/ total))
+              & foldl1 (+)
+            mu = count / total
+        in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
+              
+      d2 = thisPl
+        & PM.leaves
+        & filter (\(pfx, _) -> PM.prefixLength pfx == pl)
+        & fmap oneD2
+        & treeFold (+) 0.0
+
+  in (logBase 2 thisZ - logBase 2 nextZ, d2)
 
 {-
  - Compute multifractal spectrum rows.
@@ -297,6 +295,108 @@ computeSpectrumRows taus =
   in diffs
 
 {-
+ - Compute generalized dimension rows.
+ -}
+computeDimensionRows :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> [(Double, Double)]
+computeDimensionRows conf taus pfxs =
+  let d1 = infoDim conf pfxs
+      otherDims = taus
+        & VU.toList
+        & filter (\(q, _, _) -> q == 0.0 || q == 2.0)
+        & fmap (\(q, tauTilde, _) -> (q, tauTilde / (q - 1.0)))
+  in (1.0, d1) : otherDims
+
+{-
+ - Compute D_1, the information dimension
+ -}
+infoDim :: Config -> PrefixMap Double -> Double
+infoDim conf pfxs =
+  -- lim_{r to 0} ( sum_i p_i * log(p_i) ) / log(r)
+  -- lim_{l to infty} (sum_i p_i * log(p_i)) / -l
+  let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
+      oneEntropy :: Int -> Double
+      oneEntropy pl = pfxs
+        & PM.sliceAtLength pl
+        & PM.leaves
+        & fmap (\(_, weight) ->
+                  let p = weight / total in p * logBase 2 p
+               )
+        & treeFold (+) 0.0
+      entropies = cfgPrefixLengths conf
+        & fmap oneEntropy
+        & VU.fromList
+      pls = VU.generate (VU.length entropies) (negate . fromIntegral)
+      (coef, _r2) = Reg.olsRegress [pls] entropies
+  in coef VU.! 0
+
+
+{-
+ - Emit results in the requested output format.
+ - Just dispatch based on csv or json.
+ -}
+emitResults :: Config
+            -> Metadata
+            -> Maybe [(Double, Double, Double)]
+            -> Maybe [(Double, Double)]
+            -> Maybe [(Double, Double)]
+            -> IO ()
+emitResults conf =
+  case cfgFormat conf of
+    OutputCsv -> emitCsvResults conf
+    OutputJson -> emitJsonResults conf
+
+{-
+ - Emit csv results to stdout or files.
+ -}
+emitCsvResults :: Config
+               -> Metadata
+               -> Maybe [(Double, Double, Double)]
+               -> Maybe [(Double, Double)]
+               -> Maybe [(Double, Double)]
+               -> IO ()
+emitCsvResults conf metadata structureRows spectrumRows dimensionRows =
+  if cfgOutPrefix conf == "-"
+  then do
+    maybe (return ()) (writeStructureCsv stdout) structureRows
+    maybe (return ()) (writeSpectrumCsv stdout) spectrumRows
+    maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
+  else do
+    writeMetadata conf metadata
+    maybe (return ()) (writeStructureFile conf) structureRows
+    maybe (return ()) (writeSpectrumFile conf) spectrumRows
+    maybe (return ()) (writeDimensionsFile conf) dimensionRows
+
+{-
+ - Write some metadata to keep track of config and parameters that were auto-generated here
+ -}
+writeMetadata :: Config -> Metadata -> IO ()
+writeMetadata conf metadata = do
+  let outfile = cfgOutPrefix conf ++ "_metadata.csv"
+  hPutStrLn stderr $ "Writing metadata to " ++ outfile
+  withFile outfile WriteMode $ \hdl -> do
+    hPutStrLn hdl "key,value"
+    hPutStrLn hdl $ "input," ++ metaInput metadata
+    hPutStrLn hdl $ "min_prefix_length," ++ show (metaMinPrefixLength metadata)
+    hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
+    hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
+
+{-
+ - Write the structure function
+ -}
+writeStructureFile :: Config -> [(Double, Double, Double)] -> IO ()
+writeStructureFile conf rows = do
+  let outfile = cfgOutPrefix conf ++ "_structure.csv"
+  hPutStrLn stderr $ "Writing structure function to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeStructureCsv hdl rows)
+
+writeStructureCsv :: Handle -> [(Double, Double, Double)] -> IO ()
+writeStructureCsv hdl rows = do
+  hPutStrLn hdl "q,tauTilde,sd"
+  forM_ rows $ \(q, tauTilde, sd) ->
+    hPutStrLn hdl (show q ++ "," ++ show tauTilde ++ "," ++ show sd)
+
+
+{-
  - Write multifractal spectrum.
  -}
 writeSpectrumFile :: Config -> [(Double, Double)] -> IO ()
@@ -311,17 +411,6 @@ writeSpectrumCsv hdl rows = do
   forM_ rows $ \(alpha, f) ->
     hPutStrLn hdl (show alpha ++ "," ++ show f)
 
-{-
- - Compute generalized dimension rows.
- -}
-computeDimensionRows :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> [(Double, Double)]
-computeDimensionRows conf taus pfxs =
-  let d1 = infoDim conf pfxs
-      otherDims = taus
-        & VU.toList
-        & filter (\(q, _, _) -> q == 0.0 || q == 2.0)
-        & fmap (\(q, tauTilde, _) -> (q, tauTilde / (q - 1.0)))
-  in (1.0, d1) : otherDims
 
 {-
  - Write generalized dimensions.
@@ -341,7 +430,12 @@ writeDimensionsCsv hdl rows = do
 {-
  - Emit json results to stdout or file.
  -}
-emitJsonResults :: Config -> Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> IO ()
+emitJsonResults :: Config
+                -> Metadata
+                -> Maybe [(Double, Double, Double)]
+                -> Maybe [(Double, Double)]
+                -> Maybe [(Double, Double)]
+                -> IO ()
 emitJsonResults conf metadata structureRows spectrumRows dimensionRows = do
   let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows
   if cfgOutPrefix conf == "-"
@@ -351,7 +445,11 @@ emitJsonResults conf metadata structureRows spectrumRows dimensionRows = do
     hPutStrLn stderr $ "Writing json results to " ++ outfile
     BL8.writeFile outfile (payload <> "\n")
 
-encodeResultsJson :: Metadata -> Maybe [(Double, Double, Double)] -> Maybe [(Double, Double)] -> Maybe [(Double, Double)] -> BL8.ByteString
+encodeResultsJson :: Metadata
+                  -> Maybe [(Double, Double, Double)]
+                  -> Maybe [(Double, Double)]
+                  -> Maybe [(Double, Double)]
+                  -> BL8.ByteString
 encodeResultsJson metadata structureRows spectrumRows dimensionRows =
   encode $
     object $
@@ -405,73 +503,4 @@ encodeDimensionRowsJson rows =
     )
     rows
 
-extractSingleAddr :: [ByteString] -> ByteString
-extractSingleAddr (addr:_) = addr
-extractSingleAddr [] = error "Expected at least one column in each input row"
 
-infoDim :: Config -> PrefixMap Double -> Double
-infoDim conf pfxs =
-  -- lim_{r to 0} ( sum_i p_i * log(p_i) ) / log(r)
-  -- lim_{l to infty} (sum_i p_i * log(p_i)) / -l
-  let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
-      oneEntropy :: Int -> Double
-      oneEntropy pl = pfxs
-        & PM.sliceAtLength pl
-        & PM.leaves
-        & fmap (\(_, weight) ->
-                  let p = weight / total in p * logBase 2 p
-               )
-        & treeFold (+) 0.0
-      entropies = cfgPrefixLengths conf
-        & fmap oneEntropy
-        & VU.fromList
-      pls = VU.generate (VU.length entropies) (negate . fromIntegral)
-      (coef, _r2) = Reg.olsRegress [pls] entropies
-  in coef VU.! 0
-
-
-{-
- - Compute the modified O&W estimator for a single prefix length and q pair
- -
- - Returns the estimated tau(q) and variance
- -}
-oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
-oneMoment pm q pl =
-  let thisPl = pm
-        & PM.sliceAtLength pl
-        & PM.filter (\_ count -> count > 1) -- TODO: generalize the notion of singularity!!!
-
-      nextPl = pm
-        & PM.sliceAtLength (pl + 1)
-        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
-
-      -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
-      total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
-
-      nextZ = nextPl
-        & PM.leaves
-        & fmap ((** q) . (/ total) . snd)
-        & treeFold (+) 0.0
-
-      thisZ = thisPl
-        & PM.leaves
-        & fmap ((** q) . (/ total) . snd)
-        & treeFold (+) 0.0
-
-      oneD2 (pfx, count) =
-        let childSum = PM.children pfx
-              & fmap (PM.lookupDefault 0 nextPl)
-              & filter (> 0)
-              & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
-              & fmap ((** q) . (/ total))
-              & foldl1 (+)
-            mu = count / total
-        in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
-              
-      d2 = thisPl
-        & PM.leaves
-        & filter (\(pfx, _) -> PM.prefixLength pfx == pl)
-        & fmap oneD2
-        & treeFold (+) 0.0
-
-  in (logBase 2 thisZ - logBase 2 nextZ, d2)
