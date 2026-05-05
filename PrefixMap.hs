@@ -34,6 +34,8 @@ import Data.HashMap.Strict (HashMap)
 
 import Prelude hiding (lookup, filter)
 
+import qualified Data.List as L
+
 -- Local imports
 import Common
 
@@ -181,14 +183,18 @@ insert pfxs new@(addr, _) =
     Just _ -> pfxs
     Nothing -> insertNoDup pfxs new
 
+
+filterCount :: Num a => (Int -> Prefix -> a -> Bool) -> PrefixMap a -> PrefixMap a
+filterCount f (Node pfx count val left right)
+  | f count pfx val = Node pfx count val (filterCount f left) (filterCount f right)
+  | otherwise = EmptyMap
+filterCount _ EmptyMap = EmptyMap
+
 {-
  - Remove all subtrees that start with a node for which f is true
  -}
 filter :: Num a => (Prefix -> a -> Bool) -> PrefixMap a -> PrefixMap a
-filter f (Node pfx count val left right)
-  | f pfx val = Node pfx count val (filter f left) (filter f right)
-  | otherwise = EmptyMap
-filter _ EmptyMap = EmptyMap
+filter f = filterCount (const f)
 
 {-
  - Slices the prefix map so that it only contains up to /targetL prefixes
@@ -208,10 +214,13 @@ sliceAtLength _ EmptyMap = EmptyMap
 {-
  - Returns a list of leaves
  -}
+leavesCount :: PrefixMap a -> [(Int, (Prefix, a))]
+leavesCount (Node pfx count val EmptyMap EmptyMap) = [(count, (pfx, val))]
+leavesCount (Node _ _ _ left right) = leavesCount left ++ leavesCount right
+leavesCount EmptyMap = []
+
 leaves :: PrefixMap a -> [(Prefix, a)]
-leaves (Node pfx _ val EmptyMap EmptyMap) = [(pfx, val)]
-leaves (Node _ _ _ left right) = leaves left ++ leaves right
-leaves EmptyMap = []
+leaves = (fmap snd) . leavesCount
 
 {-
  - Returns a list of the /32 addresses or leaves of the prefix map
@@ -230,6 +239,29 @@ firstAtomicLength (Node pfx _ _ left right) =
     (Node _ 1 _ _ _, _) -> prefixLength pfx + 1
     (_, Node _ 1 _ _ _) -> prefixLength pfx + 1
     _ -> firstAtomicLength left `min` firstAtomicLength right
+
+
+{-
+ - Relaxation of firstAtomicLength:
+ - Returns the shortest prefix length where at least <threshold> of all IP addresses are in a singular/atomic prefix
+ -}
+firstAtomicLengthThreshold :: Num a => Double -> PrefixMap a -> Int
+firstAtomicLengthThreshold threshold pfxs =
+  -- for each prefix length, slice at that length, compute fraction of addresses in atomic prefixes, return if it crosses threshold
+  let total = fromIntegral $ length $ leaves pfxs
+
+      oneLength (pl : pls) =
+        let atomicCount = sliceAtLength pl pfxs
+              & leavesCount
+              & L.filter ((== 1) . fst)
+              & length
+              & fromIntegral
+        in if atomicCount / total >= threshold
+           then pl
+           else oneLength pls
+      oneLength [] = 33
+              
+  in oneLength [0..32]
 
 {-
  - Returns the shortest prefix length where at least one prefix "spilled-over".

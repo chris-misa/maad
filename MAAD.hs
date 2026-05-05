@@ -42,6 +42,13 @@ import qualified PrefixMap as PM
 defaultSpilloverThreshold :: Double
 defaultSpilloverThreshold = 0.05
 
+-- Hard max prefix length to avoid other nastiness at long prefix lengths (e.g., dynamic addressing, extreme sparseness)
+maxPrefixLength :: Int
+maxPrefixLength = 24
+
+defaultAtomicThreshold :: Double
+defaultAtomicThreshold = 0.0001
+
 deltaQ :: Double
 deltaQ = 1.0 / 8.0
 
@@ -71,6 +78,7 @@ data Config = Config
   , cfgMeasureCol :: Maybe Int
   , cfgSkipFirst :: Bool
   , cfgSpilloverThresh :: Double
+  , cfgAtomicThresh :: Double
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -136,6 +144,10 @@ optparser = Config
                     <> value defaultSpilloverThreshold <> showDefault
                     <> help "Threshold for determining when a prefix is estimated to have spilled over. Mostly only important for determining max prefix length."
                   )
+  <*> option auto ( long "atomic-threshold" <> metavar "THRESH"
+                    <> value defaultAtomicThreshold <> showDefault
+                    <> help "Determine minimum prefix length as smallest prefix length where the fraction of atomic prefixes are at least THRESH."
+                  )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -186,11 +198,14 @@ run conf = do
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) extract_addr extract_meas
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) extractSingleAddr (const 1.0)
 
-  let !firstAtomicLength = PM.firstAtomicLength pfxs
-  let !firstSpilloverLength = PM.firstSpilloverLength (cfgSpilloverThresh conf) pfxs
+  let !firstAtomicLength = PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
+  let !firstSpilloverLength =
+        case PM.firstSpilloverLength (cfgSpilloverThresh conf) pfxs of
+          x | x < maxPrefixLength -> x
+            | otherwise -> maxPrefixLength
 
-  hPutStrLn stderr $ "First atomic length: " ++ show firstAtomicLength
-  hPutStrLn stderr $ "First spill-over length: " ++ show firstSpilloverLength
+  hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
+  hPutStrLn stderr $ "Max prefix length: " ++ show firstSpilloverLength
   let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstSpilloverLength] }
       metadata = Metadata
         { metaInput = cfgFilepath conf
@@ -232,7 +247,7 @@ oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
 oneMoment pm q pl =
   let thisPl = pm
         & PM.sliceAtLength pl
-        & PM.filter (\_ count -> count > 1) -- TODO: generalize the notion of singularity!!!
+        & PM.filterCount (\count _ _ -> count > 1)
 
       nextPl = pm
         & PM.sliceAtLength (pl + 1)
