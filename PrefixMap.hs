@@ -117,11 +117,12 @@ data PrefixMap a where
   EmptyMap :: PrefixMap a
 
 {-
- - Insert the given address into the prefix map assuming it is not in the map already
+ - Insert the given address into the prefix map assuming it is not in the map already.
+ - Also returns the length where the prefix departed from the existing tree.
  -}
-insertNoDup :: Num a => PrefixMap a -> (Word32, a) -> PrefixMap a
-insertNoDup EmptyMap (addr, val) = Node (addressToPrefix addr) 1 val EmptyMap EmptyMap
-insertNoDup t@(Node pfx count oldVal left right) new@(addr, val) =
+insertNoDupLen :: Num a => PrefixMap a -> (Word32, a) -> (Int, PrefixMap a)
+insertNoDupLen EmptyMap (addr, val) = (0, Node (addressToPrefix addr) 1 val EmptyMap EmptyMap)
+insertNoDupLen t@(Node pfx count oldVal left right) new@(addr, val) =
   let newPrefix = addressToPrefix addr
   in
     if newPrefix == pfx
@@ -133,8 +134,10 @@ insertNoDup t@(Node pfx count oldVal left right) new@(addr, val) =
       -- then error "Trying to add subprefix to a /32"
       -- else
       if get_bit32 newPrefix (prefixLength pfx + 1)
-      then Node pfx (count + 1) (oldVal + val) left (insertNoDup right new)
-      else Node pfx (count + 1) (oldVal + val) (insertNoDup left new) right
+      then let (len, right') = insertNoDupLen right new
+           in (len, Node pfx (count + 1) (oldVal + val) left right')
+      else let (len, left') = insertNoDupLen left new
+           in (len, Node pfx (count + 1) (oldVal + val) left' right)
     else
       let !parentLength = first_diff_bit32 newPrefix pfx - 1
           !parentPfx = preserve_upper_bits32 pfx parentLength
@@ -144,8 +147,14 @@ insertNoDup t@(Node pfx count oldVal left right) new@(addr, val) =
         -- then error "Common parent too long"
         -- else
         if get_bit32 newPrefix (parentLength + 1)
-        then Node parentPfx (count + 1) (oldVal + val) t newNode
-        else Node parentPfx (count + 1) (oldVal + val) newNode t
+        then (parentLength, Node parentPfx (count + 1) (oldVal + val) t newNode)
+        else (parentLength, Node parentPfx (count + 1) (oldVal + val) newNode t)
+
+{-
+ - Insert the given address into the prefix map assuming it is not in the map already
+ -}
+insertNoDup :: Num a => PrefixMap a -> (Word32, a) -> PrefixMap a
+insertNoDup pfxs new = snd (insertNoDupLen pfxs new)
 
 {-
  - Look up a given prefix

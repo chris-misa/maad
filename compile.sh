@@ -17,3 +17,5 @@ ghc -O2 PrefixCounts.hs -main-is PrefixCounts
 
 ghc -O2 SpectrumHistogram.hs -main-is SpectrumHistogram
 
+ghc -O2 AutoStopTest.hs -main-is AutoStopTest
+
