@@ -37,7 +37,7 @@ import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 skipHeader :: Bool
-skipHeader = False
+skipHeader = True
 
 delta :: Double
 delta = 0.25
@@ -52,7 +52,7 @@ main = do
 run :: String -> IO ()
 run inputfile = do
   let extractSingleAddr :: [ByteString] -> ByteString
-      extractSingleAddr (addr:_) = addr
+      extractSingleAddr (_:addr:_) = addr
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
   -- The problem is that this runs increasingly slower as more and more addresses are added.
@@ -68,10 +68,13 @@ run inputfile = do
   -- Could also use some kind of search thing...
   -- Or just batches?
   let processOne :: Int -> PrefixMap Double -> [[B.ByteString]] -> IO ()
-      processOne idx pfxs ((addr : _) : theRest) = do
-        let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
-        putStrLn $ (show idx) ++ "," ++ (show len)
-        processOne (idx + 1) pfxs' theRest
+      processOne idx pfxs ((addr : _) : theRest) =
+        case PM.lookup (PM.addressToPrefix (string_to_ipv4 addr)) pfxs of
+	  Nothing -> do
+            let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
+            putStrLn $ (show idx) ++ "," ++ (show len)
+            processOne (idx + 1) pfxs' theRest
+	  Just _ -> processOne idx pfxs theRest
 
       processOne _ _ [] = return ()
 
