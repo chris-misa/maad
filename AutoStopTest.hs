@@ -68,7 +68,8 @@ run inputfile = do
   -- Could also use some kind of search thing...
   -- Or just batches?
   let processOne :: Int -> PrefixMap Double -> [[B.ByteString]] -> IO ()
-      processOne idx pfxs ((addr : _) : theRest) =
+      processOne idx pfxs (row : theRest) =
+        let addr = extractSingleAddr row in
         case PM.lookup (PM.addressToPrefix (string_to_ipv4 addr)) pfxs of
 	  Nothing -> do
             let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
