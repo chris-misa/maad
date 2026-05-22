@@ -53,10 +53,9 @@ run :: String -> IO ()
 run inputfile = do
   let extractSingleAddr :: [ByteString] -> ByteString
       extractSingleAddr (_:addr:_) = addr
+      extractSingleAddr [addr] = addr
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
-  -- TODO: modify to also report the local spill-over prefix length?
-  
   let processOne :: Int -> PrefixMap Double -> [[B.ByteString]] -> IO ()
       processOne idx pfxs (row : theRest) =
         let addr = extractSingleAddr row in
@@ -65,7 +64,8 @@ run inputfile = do
             let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
             -- look up parent at len
             -- if it's more than threshold full, update spill-over length (min)
-            putStrLn $ (show idx) ++ "," ++ (show len)
+                card = if idx `mod` 1000 == 0 then show (PM.measureCardinality pfxs') else ""
+            putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card
             processOne (idx + 1) pfxs' theRest
 	  Just _ -> processOne idx pfxs theRest
 

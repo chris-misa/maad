@@ -289,6 +289,17 @@ firstSpilloverLength delta (Node pfx _ _ left right) =
         -> pl
     _ -> firstSpilloverLength delta left `min` firstSpilloverLength delta right
 
+
+measureCardinality :: PrefixMap a -> Int
+measureCardinality pfxs =
+  let mc EmptyMap = M.empty
+      mc (Node _ count _ left right) =
+        let lmap = mc left
+            rmap = mc right
+        in M.insert count () (lmap `M.union` rmap)
+  in M.size (mc pfxs)
+
+
 {-
  - Reads a csv-type file and builds a PrefixMap.
  -
