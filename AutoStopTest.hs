@@ -56,16 +56,24 @@ run inputfile = do
       extractSingleAddr [addr] = addr
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
+  let getVar24 n pfxs =
+        let pfxs24 = PM.sliceAtLength 24 pfxs
+            b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computer in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+        in pfxs24      -- PrefixMap a
+           & PM.leavesCount -- [(Int, (Prefix, a))]
+           & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's
+           & fmap (\pi -> sqrt (b * pi * (1.0 - pi) / fromIntegral n)) -- [Double] -- the b_i's
+           & maximum
+  
   let processOne :: Int -> PrefixMap Double -> [[B.ByteString]] -> IO ()
       processOne idx pfxs (row : theRest) =
         let addr = extractSingleAddr row in
         case PM.lookup (PM.addressToPrefix (string_to_ipv4 addr)) pfxs of
 	  Nothing -> do
             let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
-            -- look up parent at len
-            -- if it's more than threshold full, update spill-over length (min)
                 card = if idx `mod` 1000 == 0 then show (PM.measureCardinality pfxs') else ""
-            putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card
+                var24 = if idx `mod` 1000 == 0 then show (getVar24 (idx + 1) pfxs') else ""
+            putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card ++ "," ++ var24
             processOne (idx + 1) pfxs' theRest
 	  Just _ -> processOne idx pfxs theRest
 
