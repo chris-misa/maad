@@ -17,6 +17,7 @@ import Control.Monad
 
 import Data.Word
 import Data.Maybe
+import qualified Data.List as L
 
 import Data.Aeson ((.=), Value, encode, object)
 import qualified Data.ByteString.Char8 as B
@@ -56,14 +57,15 @@ run inputfile = do
       extractSingleAddr [addr] = addr
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
-  let getVar24 n pfxs =
+  let getVar24 :: Int -> PrefixMap Double -> (Double, Double)
+      getVar24 n pfxs =
         let pfxs24 = PM.sliceAtLength 24 pfxs
             b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computer in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
         in pfxs24      -- PrefixMap a
            & PM.leavesCount -- [(Int, (Prefix, a))]
            & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's
-           & fmap (\pi -> sqrt (b * pi * (1.0 - pi) / fromIntegral n)) -- [Double] -- the b_i's
-           & maximum
+           & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / fromIntegral n))) -- [(Double, Double)] -- add the b_i's
+           & L.maximumBy (\l r -> compare (snd l) (snd r))
   
   let processOne :: Int -> PrefixMap Double -> [[B.ByteString]] -> IO ()
       processOne idx pfxs (row : theRest) =
@@ -72,8 +74,8 @@ run inputfile = do
 	  Nothing -> do
             let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
                 card = if idx `mod` 100000 == 0 then show (PM.measureCardinality pfxs') else ""
-                var24 = if idx `mod` 10000 == 0 then show (getVar24 (idx + 1) pfxs') else ""
-            putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card ++ "," ++ var24
+                var24 = if idx `mod` 10000 == 0 then (show *** show) (getVar24 (idx + 1) pfxs') else ("", "")
+            putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card ++ "," ++ fst var24 ++ "," ++ snd var24
             processOne (idx + 1) pfxs' theRest
 	  Just _ -> processOne idx pfxs theRest
 
