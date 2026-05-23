@@ -71,8 +71,8 @@ run inputfile = do
         case PM.lookup (PM.addressToPrefix (string_to_ipv4 addr)) pfxs of
 	  Nothing -> do
             let (len, pfxs') = PM.insertNoDupLen pfxs (string_to_ipv4 addr, 1.0)
-                card = if idx `mod` 1000 == 0 then show (PM.measureCardinality pfxs') else ""
-                var24 = if idx `mod` 1000 == 0 then show (getVar24 (idx + 1) pfxs') else ""
+                card = if idx `mod` 100000 == 0 then show (PM.measureCardinality pfxs') else ""
+                var24 = if idx `mod` 10000 == 0 then show (getVar24 (idx + 1) pfxs') else ""
             putStrLn $ (show idx) ++ "," ++ (show len) ++ "," ++ card ++ "," ++ var24
             processOne (idx + 1) pfxs' theRest
 	  Just _ -> processOne idx pfxs theRest
