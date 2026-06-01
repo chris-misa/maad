@@ -324,18 +324,20 @@ fromFile filename skipHeader autoStop getAddr getAux = do
                     let pfxs' = insertNoDup pfxs (nextAddr, nextVal)
                     in if idx `mod` 10000 == 0 -- check auto-stop in batches of 10k for better performance
                        then let n = fromIntegral (idx + 1)
-                                b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+                                b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+                                lower_limit = sqrt b / 16
                                 (maxP, maxB) = pfxs'
                                   & sliceAtLength len
                                   & leavesCount -- [(Int, (Prefix, a))]
                                   & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's
                                   & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / fromIntegral n))) -- [(Double, Double)] -- add the b_i's
                                   & L.maximumBy (\l r -> compare (snd l) (snd r))
-                            in if maxB / maxP < thresh
+                            in if idx > 0 && (maxB / maxP) - lower_limit < thresh
                                then pfxs'
                                else processOne (idx + 1) pfxs' theRest
                        else processOne (idx + 1) pfxs' theRest
                   Just _ -> processOne idx pfxs theRest -- same as insert: skip duplicate addresses
+              processOne _ pfxs [] = pfxs
           in processOne 0 EmptyMap
   contents <- if filename == "-" then BL.getContents else BL.readFile filename
   contents
