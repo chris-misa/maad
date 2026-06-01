@@ -49,6 +49,12 @@ maxPrefixLength = 24
 defaultAtomicThreshold :: Double
 defaultAtomicThreshold = 0.0001
 
+defaultAutoStopLength :: Int
+defaultAutoStopLength = 24
+
+defaultAutoStopThreshold :: Double
+defaultAutoStopThreshold = 0.01
+
 deltaQ :: Double
 deltaQ = 1.0 / 8.0
 
@@ -79,6 +85,7 @@ data Config = Config
   , cfgSkipFirst :: Bool
   , cfgSpilloverThresh :: Double
   , cfgAtomicThresh :: Double
+  , cfgAutoStop :: Maybe (Int, Double)
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -148,6 +155,9 @@ optparser = Config
                     <> value defaultAtomicThreshold <> showDefault
                     <> help "Determine minimum prefix length as smallest prefix length where the fraction of atomic prefixes are at least THRESH."
                   )
+  <*> flag Nothing (Just (defaultAutoStopLength, defaultAutoStopThreshold)) ( long "auto-stop"
+                                                                              <> help ("Automatically stop reading addresses after the estimated normalized CI around /" ++ show defaultAutoStopLength ++ " prefixes is smaller than " ++ show defaultAutoStopThreshold ++ ".")
+                                                                            )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -195,8 +205,8 @@ run conf = do
                    case cfgMeasureCol conf of
                      Just col -> read . B.unpack . flip (!!) col
                      Nothing -> const 1.0 -- default to constant 1.0 for each address
-             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) extract_addr extract_meas
-        else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) extractSingleAddr (const 1.0)
+             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extract_addr extract_meas
+        else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
 
   let !firstAtomicLength = PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
   let !firstSpilloverLength =

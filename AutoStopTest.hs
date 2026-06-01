@@ -60,7 +60,7 @@ run inputfile = do
   let getVar24 :: Int -> PrefixMap Double -> (Double, Double)
       getVar24 n pfxs =
         let pfxs24 = PM.sliceAtLength 24 pfxs
-            b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computer in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+            b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
         in pfxs24      -- PrefixMap a
            & PM.leavesCount -- [(Int, (Prefix, a))]
            & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's

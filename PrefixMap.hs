@@ -310,15 +310,38 @@ measureCardinality pfxs =
 fromFile :: Num a
   => String -- the filepath to load
   -> Bool -- should we skip the first line?
+  -> Maybe (Int, Double) -- if Just (len, thresh), then auto-stop once normalized CI size at /len drops below thresh
   -> ([ByteString] -> ByteString) -- function that returns the IP address given a list of columns for a particular row
   -> ([ByteString] -> a) -- function that returns any auxiliary metadata to associate with the row's address
   -> IO (PrefixMap a)
-fromFile filename skipHeader getAddr getAux = do
+fromFile filename skipHeader autoStop getAddr getAux = do
+  let acc = case autoStop of
+        Nothing -> foldl insert EmptyMap
+        Just (len, thresh) ->
+          let processOne idx pfxs ((nextAddr, nextVal) : theRest) =
+                case lookup (addressToPrefix nextAddr) pfxs of
+                  Nothing ->
+                    let pfxs' = insertNoDup pfxs (nextAddr, nextVal)
+                    in if idx `mod` 10000 == 0 -- check auto-stop in batches of 10k for better performance
+                       then let n = fromIntegral (idx + 1)
+                                b = 35.2 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+                                (maxP, maxB) = pfxs'
+                                  & sliceAtLength len
+                                  & leavesCount -- [(Int, (Prefix, a))]
+                                  & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's
+                                  & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / fromIntegral n))) -- [(Double, Double)] -- add the b_i's
+                                  & L.maximumBy (\l r -> compare (snd l) (snd r))
+                            in if maxB / maxP < thresh
+                               then pfxs'
+                               else processOne (idx + 1) pfxs' theRest
+                       else processOne (idx + 1) pfxs' theRest
+                  Just _ -> processOne idx pfxs theRest -- same as insert: skip duplicate addresses
+          in processOne 0 EmptyMap
   contents <- if filename == "-" then BL.getContents else BL.readFile filename
   contents
     & BL.lines
     & (if skipHeader then tail else id)
     & fmap (B.split ',' . BL.toStrict)
     & fmap ((string_to_ipv4 . getAddr) &&& getAux)
-    & foldl insert EmptyMap
+    & acc
     & return
