@@ -100,6 +100,7 @@ data Metadata = Metadata
   , metaMinPrefixLength :: Int
   , metaMaxPrefixLength :: Int
   , metaTotalAddrs :: Int
+  , metaDidAutoStop :: Bool
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -198,7 +199,7 @@ run conf = do
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
   -- Load in the addresses and optional associated "weights"
-  pfxs <-
+  (pfxs, didAutoStop) <-
         if cfgCsv conf
         then let extract_addr = flip (!!) (fromMaybe 0 (cfgAddrCol conf)) -- default to column 0
                  extract_meas =
@@ -222,6 +223,7 @@ run conf = do
         , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
         , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
         , metaTotalAddrs = length (PM.leaves pfxs)
+        , metaDidAutoStop = didAutoStop
         }
 
   -- Compute the structure function
@@ -404,6 +406,7 @@ writeMetadata conf metadata = do
     hPutStrLn hdl $ "min_prefix_length," ++ show (metaMinPrefixLength metadata)
     hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
     hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
+    hPutStrLn hdl $ "did_auto_stop," ++ show (metaDidAutoStop metadata)
 
 {-
  - Write the structure function
@@ -492,6 +495,7 @@ encodeMetadataJson metadata =
     , "minPrefixLength" .= metaMinPrefixLength metadata
     , "maxPrefixLength" .= metaMaxPrefixLength metadata
     , "totalAddrs" .= metaTotalAddrs metadata
+    , "didAutoStop" .= metaDidAutoStop metadata
     ]
 
 encodeStructureRowsJson :: [(Double, Double, Double)] -> [Value]

@@ -313,10 +313,10 @@ fromFile :: Num a
   -> Maybe (Int, Double) -- if Just (len, thresh), then auto-stop once normalized CI size at /len drops below thresh
   -> ([ByteString] -> ByteString) -- function that returns the IP address given a list of columns for a particular row
   -> ([ByteString] -> a) -- function that returns any auxiliary metadata to associate with the row's address
-  -> IO (PrefixMap a)
+  -> IO (PrefixMap a, Bool) -- the resulting prefix map, flag indicating whether auto-stop happened or not
 fromFile filename skipHeader autoStop getAddr getAux = do
   let acc = case autoStop of
-        Nothing -> foldl insert EmptyMap
+        Nothing -> (,False) . foldl insert EmptyMap
         Just (len, thresh) ->
           let processOne idx pfxs ((nextAddr, nextVal) : theRest) =
                 case lookup (addressToPrefix nextAddr) pfxs of
@@ -333,11 +333,11 @@ fromFile filename skipHeader autoStop getAddr getAux = do
                                   & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / fromIntegral n))) -- [(Double, Double)] -- add the b_i's
                                   & L.maximumBy (\l r -> compare (snd l) (snd r))
                             in if idx > 0 && (maxB / maxP) - lower_limit < thresh
-                               then pfxs'
+                               then (pfxs', True)
                                else processOne (idx + 1) pfxs' theRest
                        else processOne (idx + 1) pfxs' theRest
                   Just _ -> processOne idx pfxs theRest -- same as insert: skip duplicate addresses
-              processOne _ pfxs [] = pfxs
+              processOne _ pfxs [] = (pfxs, False)
           in processOne 0 EmptyMap
   contents <- if filename == "-" then BL.getContents else BL.readFile filename
   contents
