@@ -18,20 +18,22 @@ Otherwise, find your own way to get `ghc` and required libraries listed in `shel
 
 The main executable produced is called `MAAD`:
 ```
-$ ./MAAD  --help
+$ ./MAAD --help
 MAAD - Multifractal Address-space Anomaly Detection
 
-Usage: MAAD --input FILEPATH --output FILEPATH_PREFIX [-t|--structure]
-            [--format FORMAT] [-s|--spectrum] [-d|--dimensions] [--csv]
-            [-a|--addr-col COL] [-m|--meas-col COL] [--skip-first]
+Usage: MAAD --input FILEPATH --output FILEPATH_PREFIX [--format FORMAT] 
+            [-t|--structure] [-s|--spectrum] [-d|--dimensions] [--csv] 
+            [-a|--addr-col COL] [-m|--meas-col COL] [--skip-first] 
+            [--spillover-threshold DELTA] [--atomic-threshold THRESH] 
+            [--auto-stop]
 
   Compute a combination of different multifractal analyses of a given set of IP
   addresses, optimally based on a per-address measure.
 
 Available options:
   --input FILEPATH         File to read (csv or one address on each line).
-  --output FILEPATH_PREFIX Prefix for output files, or "-" for stdout.
-  --format FORMAT          Output format: csv or json. Default: csv
+  --output FILEPATH_PREFIX Prefix for output files, or - for stdout.
+  --format FORMAT          Output format: csv or json. (default: csv)
   -t,--structure           Compute structure function
                            (OUT_PREFIX_structure.csv).
   -s,--spectrum            Compute multifractal spectrum
@@ -41,11 +43,24 @@ Available options:
   --csv                    Input file is csv (with multiple columns that need to
                            be parsed).
   -a,--addr-col COL        If input is a csv file, this (zero-based) column
-                           contains the IP addresses to analyze. Default 0.
+                           contains the IP addresses to analyze. Default to
+                           column 0.
   -m,--meas-col COL        If the input is a csv file, this (zero-based) column
                            contains the measure associated with each IP address.
-                           Default 1.
+                           If not specified, each address will receive constant
+                           measure 1.0 (even if --csv is specified).
   --skip-first             Skip the first (header) row before reading the data.
+  --spillover-threshold DELTA
+                           Threshold for determining when a prefix is estimated
+                           to have spilled over. Mostly only important for
+                           determining max prefix length. (default: 5.0e-2)
+  --atomic-threshold THRESH
+                           Determine minimum prefix length as smallest prefix
+                           length where the fraction of atomic prefixes are at
+                           least THRESH. (default: 1.0e-4)
+  --auto-stop              Automatically stop reading addresses after the
+                           estimated normalized CI around /24 prefixes is
+                           smaller than 1.0e-2.
   -h,--help                Show this help text
 ```
 
