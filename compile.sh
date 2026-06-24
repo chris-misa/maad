@@ -2,6 +2,9 @@
 
 ghc -O2 MAAD.hs -main-is MAAD
 
+ghc -O2 CantorSet.hs -main-is CantorSet
+
+
 # #ghc -O2 -prof -fprof-auto Singularities.hs -main-is Singularities
 # ghc -O2 Singularities.hs -main-is Singularities
 # 
