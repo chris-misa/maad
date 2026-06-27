@@ -36,6 +36,7 @@ usage = "PartitionFunctions <filepath>"
 
 qs :: [Double]
 qs = [-2.0, -1.9..4.0]
+--qs = [-10.0, -9.0..4.0]
 
 prefixLengths :: [Int]
 prefixLengths = [0..32]
