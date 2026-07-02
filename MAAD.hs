@@ -79,6 +79,7 @@ data Config = Config
   , cfgStructure :: Bool
   , cfgSpectrum :: Bool
   , cfgDimensions :: Bool
+  , cfgPartitions :: Bool
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
@@ -91,7 +92,7 @@ data Config = Config
   deriving (Show)
 
 requestedAnalysisCount :: Config -> Int
-requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions ]
+requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions, cfgPartitions ]
   & fmap (\f -> if f conf then 1 else 0)
   & foldl1 (+)
 
@@ -137,6 +138,9 @@ optparser = Config
   <*> switch ( long "dimensions" <> short 'd'
                <> help "Compute generalized dimensions (OUT_PREFIX_dimensions.csv)."
              )
+  <*> switch ( long "partitions" <> short 'p'
+               <> help "Compute partition functions (OUT_PREFIX_partitions.csv)."
+             )
   <*> switch ( long "csv"
                <> help "Input file is csv (with multiple columns that need to be parsed)."
              )
@@ -177,7 +181,7 @@ main = do
 
   -- Verify that the configuration given in the arguments is valid
   when (requestedAnalysisCount conf <= 0) $
-    dieWith "Must specify one of --structure, --spectrum, or --dimensions to compute."
+    dieWith "Must specify one of --structure, --spectrum, --dimensions, or --partitions to compute."
     
   when ((isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)) $
     dieWith "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
@@ -246,9 +250,11 @@ run conf = do
       structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
       spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
+      partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
 
   -- Write output to csv files, std out, or json
-  emitResults conf' metadata structureRows spectrumRows dimensionRows
+  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows
+
 
 {-
  - Compute the modified O&W estimator for a single prefix length and q pair
@@ -356,6 +362,23 @@ infoDim conf pfxs =
       (coef, _r2) = Reg.olsRegress [pls] entropies
   in coef VU.! 0
 
+computePartitions :: Config -> PrefixMap Double -> [(Double, [(Double, Double)])]
+computePartitions conf pfxs =
+  let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
+
+      getZ q pl =
+        let z = pfxs
+              & PM.sliceAtLength pl
+              & PM.leaves
+              & fmap ((** q) . (/ total) . snd)
+              & treeFold (+) 0.0
+        in (fromIntegral pl, z)
+        
+      oneQ q =
+        let zs = fmap (getZ q) [0..32]
+        in (q, zs)
+
+  in fmap oneQ qs
 
 {-
  - Emit results in the requested output format.
@@ -366,6 +389,7 @@ emitResults :: Config
             -> Maybe [(Double, Double, Double)]
             -> Maybe [(Double, Double)]
             -> Maybe [(Double, Double)]
+            -> Maybe [(Double, [(Double, Double)])]
             -> IO ()
 emitResults conf =
   case cfgFormat conf of
@@ -380,18 +404,21 @@ emitCsvResults :: Config
                -> Maybe [(Double, Double, Double)]
                -> Maybe [(Double, Double)]
                -> Maybe [(Double, Double)]
+               -> Maybe [(Double, [(Double, Double)])]
                -> IO ()
-emitCsvResults conf metadata structureRows spectrumRows dimensionRows =
+emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows =
   if cfgOutPrefix conf == "-"
   then do
     maybe (return ()) (writeStructureCsv stdout) structureRows
     maybe (return ()) (writeSpectrumCsv stdout) spectrumRows
     maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
+    maybe (return ()) (writePartitionsCsv stdout) partitionsRows
   else do
     writeMetadata conf metadata
     maybe (return ()) (writeStructureFile conf) structureRows
     maybe (return ()) (writeSpectrumFile conf) spectrumRows
     maybe (return ()) (writeDimensionsFile conf) dimensionRows
+    maybe (return ()) (writePartitionsFile conf) partitionsRows
 
 {-
  - Write some metadata to keep track of config and parameters that were auto-generated here
@@ -456,6 +483,22 @@ writeDimensionsCsv hdl rows = do
     hPutStrLn hdl (show q ++ "," ++ show dim)
 
 {-
+ - Write partition functions.
+ -}
+writePartitionsFile :: Config -> [(Double, [(Double, Double)])] -> IO ()
+writePartitionsFile conf rows = do
+  let outfile = cfgOutPrefix conf ++ "_partitions.csv"
+  hPutStrLn stderr $ "Writing partition functions to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writePartitionsCsv hdl rows)
+
+writePartitionsCsv :: Handle -> [(Double, [(Double, Double)])] -> IO ()
+writePartitionsCsv hdl rows = do
+  hPutStrLn hdl "q,pl,z"
+  forM_ rows $ \(q, zs) ->
+    forM_ zs $ \(pl, z) ->
+                 hPutStrLn hdl (show q ++ "," ++ show pl ++ "," ++ show z)
+
+{-
  - Emit json results to stdout or file.
  -}
 emitJsonResults :: Config
@@ -463,9 +506,10 @@ emitJsonResults :: Config
                 -> Maybe [(Double, Double, Double)]
                 -> Maybe [(Double, Double)]
                 -> Maybe [(Double, Double)]
+                -> Maybe [(Double, [(Double, Double)])]
                 -> IO ()
-emitJsonResults conf metadata structureRows spectrumRows dimensionRows = do
-  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows
+emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows = do
+  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows
   if cfgOutPrefix conf == "-"
   then BL8.putStrLn payload
   else do
@@ -477,8 +521,9 @@ encodeResultsJson :: Metadata
                   -> Maybe [(Double, Double, Double)]
                   -> Maybe [(Double, Double)]
                   -> Maybe [(Double, Double)]
+                  -> Maybe [(Double, [(Double, Double)])]
                   -> BL8.ByteString
-encodeResultsJson metadata structureRows spectrumRows dimensionRows =
+encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows =
   encode $
     object $
       [ "schemaVersion" .= (1 :: Int)
@@ -487,6 +532,7 @@ encodeResultsJson metadata structureRows spectrumRows dimensionRows =
       ++ maybe [] (\rows -> ["structure" .= encodeStructureRowsJson rows]) structureRows
       ++ maybe [] (\rows -> ["spectrum" .= encodeSpectrumRowsJson rows]) spectrumRows
       ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) dimensionRows
+      ++ maybe [] (\rows -> ["partitions" .= encodePartitionsRowsJson rows]) partitionsRows
 
 encodeMetadataJson :: Metadata -> Value
 encodeMetadataJson metadata =
@@ -532,4 +578,17 @@ encodeDimensionRowsJson rows =
     )
     rows
 
+encodePartitionsRowsJson :: [(Double, [(Double, Double)])] -> [Value]
+encodePartitionsRowsJson =
+  concatMap
+    (\(q, zs) ->
+       fmap (\(pl, z) ->
+               object
+               [ "q" .= q
+               , "pl" .= pl
+               , "z" .= z
+               ]
+            ) zs
+    )
+    
 
