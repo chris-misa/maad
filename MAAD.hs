@@ -139,7 +139,7 @@ optparser = Config
                <> help "Compute generalized dimensions (OUT_PREFIX_dimensions.csv)."
              )
   <*> switch ( long "partitions" <> short 'p'
-               <> help "Compute partition functions (OUT_PREFIX_partitions.csv)."
+               <> help "Compute partition functions (OUT_PREFIX_partitions.csv). (Note that this uses a different range of q values than the other estimates.)"
              )
   <*> switch ( long "csv"
                <> help "Input file is csv (with multiple columns that need to be parsed)."
@@ -378,7 +378,7 @@ computePartitions conf pfxs =
         let zs = fmap (getZ q) [0..32]
         in (q, zs)
 
-  in fmap oneQ qs
+  in fmap oneQ [-2.0, -1.9..4.0]
 
 {-
  - Emit results in the requested output format.

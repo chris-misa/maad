@@ -265,7 +265,7 @@ firstAtomicLengthThreshold threshold pfxs =
               & L.filter ((== 1) . fst)
               & length
               & fromIntegral
-        in if atomicCount / total >= threshold
+        in if atomicCount / total > threshold
            then pl
            else oneLength pls
       oneLength [] = 33
