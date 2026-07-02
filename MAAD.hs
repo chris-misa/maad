@@ -39,15 +39,15 @@ import Common
 import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
-defaultSpilloverThreshold :: Double
-defaultSpilloverThreshold = 0.05
+defaultAtomicThreshold :: Double
+defaultAtomicThreshold = 0.0001
+
+defaultFullThreshold :: Double
+defaultFullThreshold = 0.05
 
 -- Hard max prefix length to avoid other nastiness at long prefix lengths (e.g., dynamic addressing, extreme sparseness)
 maxPrefixLength :: Int
 maxPrefixLength = 24
-
-defaultAtomicThreshold :: Double
-defaultAtomicThreshold = 0.0001
 
 defaultAutoStopLength :: Int
 defaultAutoStopLength = 24
@@ -83,8 +83,8 @@ data Config = Config
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
   , cfgSkipFirst :: Bool
-  , cfgSpilloverThresh :: Double
   , cfgAtomicThresh :: Double
+  , cfgFullThresh :: Double
   , cfgAutoStop :: Maybe (Int, Double)
   , cfgPrefixLengths :: [Int]
   }
@@ -148,13 +148,13 @@ optparser = Config
   <*> switch ( long "skip-first"
                <> help "Skip the first (header) row before reading the data."
              )
-  <*> option auto ( long "spillover-threshold" <> metavar "DELTA"
-                    <> value defaultSpilloverThreshold <> showDefault
-                    <> help "Threshold for determining when a prefix is estimated to have spilled over. Mostly only important for determining max prefix length."
-                  )
   <*> option auto ( long "atomic-threshold" <> metavar "THRESH"
                     <> value defaultAtomicThreshold <> showDefault
                     <> help "Determine minimum prefix length as smallest prefix length where the fraction of atomic prefixes are at least THRESH."
+                  )
+  <*> option auto ( long "full-threshold" <> metavar "DELTA"
+                    <> value defaultFullThreshold <> showDefault
+                    <> help "Threshold for determining when a prefix is estimated to be full. Mostly only important for determining max prefix length."
                   )
   <*> flag Nothing (Just (defaultAutoStopLength, defaultAutoStopThreshold)) ( long "auto-stop"
                                                                               <> help ("Automatically stop reading addresses after the estimated normalized CI around /" ++ show defaultAutoStopLength ++ " prefixes is smaller than " ++ show defaultAutoStopThreshold ++ ".")
@@ -210,14 +210,14 @@ run conf = do
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
 
   let !firstAtomicLength = PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
-  let !firstSpilloverLength =
-        case PM.firstSpilloverLength (cfgSpilloverThresh conf) pfxs of
+  let !firstFullLength =
+        case PM.firstFullLength (cfgFullThresh conf) pfxs of
           x | x < maxPrefixLength -> x
             | otherwise -> maxPrefixLength
 
   hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
-  hPutStrLn stderr $ "Max prefix length: " ++ show firstSpilloverLength
-  let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstSpilloverLength] }
+  hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
+  let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstFullLength] }
       metadata = Metadata
         { metaInput = cfgFilepath conf
         , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')

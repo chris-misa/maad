@@ -289,6 +289,17 @@ firstSpilloverLength delta (Node pfx _ _ left right) =
         -> pl
     _ -> firstSpilloverLength delta left `min` firstSpilloverLength delta right
 
+{-
+ - Slightly different notion than spillover, works better in practice
+ -}
+firstFullLength :: Double -> PrefixMap a -> Int
+firstFullLength _ EmptyMap = 33
+firstFullLength delta (Node pfx count _ left right) =
+  let pl = prefixLength pfx in
+    if 1.0 - (logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl)) <= delta
+    then pl
+    else firstFullLength delta left `min` firstFullLength delta right
+
 
 measureCardinality :: PrefixMap a -> Int
 measureCardinality pfxs =

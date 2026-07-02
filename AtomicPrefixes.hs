@@ -3,7 +3,7 @@
  - License: (See ./LICENSE)
  -
  - Utility to compute the number of atomic prefixes as a function of prefix length.
- - Actually also count spill-over prefixes too cause it's basically the same shape computation.
+ - Actually also count spill-over prefixes and some other things too cause they're basically the same shape computation.
  -}
 
 module AtomicPrefixes where
@@ -39,7 +39,7 @@ main = do
   case args of
     [filepath] -> do
       (pfxs, _) <- PM.fromFile filepath True Nothing (head . tail) (const 1.0)
-      putStrLn "pl,n,atomic,spillover"
+      putStrLn "pl,n,atomic,spillover,max_mu,min_mu"
       forM_ [0..32] $ \pl -> do
         let pfxs_at_pl = pfxs & PM.sliceAtLength pl & PM.leavesCount -- [(Int, (Prefix, a))]
             n = length pfxs_at_pl
@@ -49,6 +49,20 @@ main = do
             spillover = pfxs_at_pl
               & filter ((== 2^(32 - pl)) . fst)
               & length
-        putStrLn $ show pl ++ "," ++ show n ++ "," ++ show atomic ++ "," ++ show spillover
+            max_mu = pfxs_at_pl
+              & fmap fst
+              & maximum
+            min_mu = pfxs_at_pl
+              & fmap fst
+              & minimum
+        putStrLn $
+          show pl ++ "," ++
+          show n ++ "," ++
+          show atomic ++ "," ++
+          show spillover ++ "," ++
+          show max_mu ++ "," ++
+          show min_mu
     _ -> putStrLn usage
+
+
 
