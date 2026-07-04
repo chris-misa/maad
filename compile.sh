@@ -8,6 +8,8 @@ ghc -O2 AtomicPrefixes.hs -main-is AtomicPrefixes
 
 ghc -O2 PartitionFunctions.hs -main-is PartitionFunctions
 
+ghc -O2 Transform.hs -main-is Transform
+
 # ghc -O2 AtomicSpillover.hs -main-is AtomicSpillover
 
 # #ghc -O2 -prof -fprof-auto Singularities.hs -main-is Singularities

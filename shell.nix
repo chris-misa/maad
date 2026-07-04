@@ -14,6 +14,7 @@ mkShell {
       wide-word
       treefold
       optparse-applicative
+      random-shuffle
     ]))
     emacs
     gnuplot
