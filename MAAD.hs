@@ -214,10 +214,10 @@ run conf = do
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
 
   let !firstAtomicLength = PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
-  let !firstFullLength =
-        case PM.firstFullLength (cfgFullThresh conf) pfxs of
-          x | x < maxPrefixLength -> x
-            | otherwise -> maxPrefixLength
+  let !firstFullLength = maxPrefixLength -- HACKED
+        -- case PM.firstFullLength (cfgFullThresh conf) pfxs of
+        --   x | x < maxPrefixLength -> x
+        --     | otherwise -> maxPrefixLength
 
   hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
   hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
@@ -232,7 +232,7 @@ run conf = do
 
   -- Compute the structure function
   let oneTau q = 
-        let moms = fmap (oneMoment pfxs q) (cfgPrefixLengths conf')
+        let moms = fmap (oneMoment conf' pfxs q) (cfgPrefixLengths conf')
             n = fromIntegral (length moms)
             tauTilde = moms
               & fmap fst
@@ -261,21 +261,27 @@ run conf = do
  -
  - Returns the estimated tau(q) and variance
  -}
-oneMoment :: PrefixMap Double -> Double -> Int -> (Double, Double)
-oneMoment pm q pl =
-  let thisPl = pm
+oneMoment :: Config -> PrefixMap Double -> Double -> Int -> (Double, Double)
+oneMoment conf pm q pl =
+  let removeAtomicAndFull count pfx _ =
+        let pl = PM.prefixLength pfx
+            delta = cfgFullThresh conf
+        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl) < 1.0 - delta
+        
+      thisPl = pm
         & PM.sliceAtLength pl
-        & PM.filterCount (\count _ _ -> count > 1)
+        & PM.filterCount removeAtomicAndFull
 
       nextPl = pm
         & PM.sliceAtLength (pl + 1)
-        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)
+        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)        
 
       -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
       total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
 
       nextZ = nextPl
         & PM.leaves
+        & filter ((== pl + 1) . PM.prefixLength . fst) -- Have to explicitly reject internal prefixes in nextPl cause PM.filter above may preserve them as leaves.
         & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
