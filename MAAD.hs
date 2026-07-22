@@ -43,7 +43,7 @@ import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 defaultAtomicThreshold :: Double
-defaultAtomicThreshold = 0.0001
+defaultAtomicThreshold = 0.0
 
 defaultFullThreshold :: Double
 defaultFullThreshold = 0.05
@@ -217,8 +217,8 @@ run conf = do
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extract_addr extract_meas
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
 
-  let !firstAtomicLength = PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
-  let !firstFullLength = maxPrefixLength -- HACKED
+  let !firstAtomicLength = 8 -- PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
+  let !firstFullLength = 24 -- maxPrefixLength -- HACKED
         -- case PM.firstFullLength (cfgFullThresh conf) pfxs of
         --   x | x < maxPrefixLength -> x
         --     | otherwise -> maxPrefixLength
@@ -229,7 +229,9 @@ run conf = do
 
       -- Compute the sets of prefixes at each length with valid scaling behavior
       validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
-      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf') -- [0..32]
+      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf')
+
+      -- TODO: compute the multinomial thing for each measure subset in validPfxs
   
       metadata = Metadata
         { metaInput = cfgFilepath conf
