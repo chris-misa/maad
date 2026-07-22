@@ -105,6 +105,7 @@ data Metadata = Metadata
   , metaMaxPrefixLength :: Int
   , metaTotalAddrs :: Int
   , metaDidAutoStop :: Bool
+  , metaPrefixCounts :: [(Int, Int)]
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -225,19 +226,19 @@ run conf = do
   hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
   hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
   let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstFullLength] }
+
+      -- Compute the sets of prefixes at each length with valid scaling behavior
+      validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
+      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf') -- [0..32]
+  
       metadata = Metadata
         { metaInput = cfgFilepath conf
         , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
         , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
         , metaTotalAddrs = length (PM.leaves pfxs)
         , metaDidAutoStop = didAutoStop
+        , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
         }
-
-      -- Compute the sets of prefixes at each length with valid scaling behavior
-      validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
-      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf') -- [0..32]
-
-      -- TODO: add counts of valid pfxs at each prefix length to metadata...
 
       -- Compute the structure function
       oneTau q = 
@@ -463,6 +464,8 @@ writeMetadata conf metadata = do
     hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
     hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
     hPutStrLn hdl $ "did_auto_stop," ++ show (metaDidAutoStop metadata)
+    forM_ (metaPrefixCounts metadata) $ \(pl, count) ->
+      hPutStrLn hdl $ "prefix_count/" ++ show pl ++ "," ++ show count
 
 {-
  - Write the structure function
@@ -571,7 +574,19 @@ encodeMetadataJson metadata =
     , "maxPrefixLength" .= metaMaxPrefixLength metadata
     , "totalAddrs" .= metaTotalAddrs metadata
     , "didAutoStop" .= metaDidAutoStop metadata
+    , "prefix_counts" .= encodePrefixCountsJson (metaPrefixCounts metadata)
     ]
+
+encodePrefixCountsJson :: [(Int, Int)] -> [Value]
+encodePrefixCountsJson counts =
+  fmap
+    (\(pl, count) ->
+       object
+         [ "pl" .= pl
+         , "count" .= count
+         ]
+    )
+    counts
 
 encodeStructureRowsJson :: [(Double, Double, Double)] -> [Value]
 encodeStructureRowsJson rows =
