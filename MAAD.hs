@@ -263,6 +263,10 @@ run conf = do
  -}
 oneMoment :: Config -> PrefixMap Double -> Double -> Int -> (Double, Double)
 oneMoment conf pm q pl =
+  -- TODO: count the total number of prefixes actually considered (after atomic and full filtering) and write to metadata
+  -- actually only need to do it for one q-value...? ops!
+  -- better way is to first compute the filter sets of prefixes at each prefix length, (then counting is trivial) and this is all more efficient...
+  -- the nasty part is dealing with the variance term cause it requires another lookup into the tree structure!
   let removeAtomicAndFull count pfx _ =
         let pl = PM.prefixLength pfx
             delta = cfgFullThresh conf
@@ -281,7 +285,7 @@ oneMoment conf pm q pl =
 
       nextZ = nextPl
         & PM.leaves
-        & filter ((== pl + 1) . PM.prefixLength . fst) -- Have to explicitly reject internal prefixes in nextPl cause PM.filter above may preserve them as leaves.
+        & filter ((== pl + 1) . PM.prefixLength . fst) -- Have to explicitly reject internal prefixes in nextPl cause PM.filter above may preserve them as leaves at /pl
         & fmap ((** q) . (/ total) . snd)
         & treeFold (+) 0.0
 
