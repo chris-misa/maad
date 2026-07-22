@@ -34,6 +34,9 @@ import qualified Statistics.Regression as Reg
 
 import Data.TreeFold (treeFold)
 
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
+
 -- Local imports
 import Common
 import PrefixMap (Prefix(..), PrefixMap)
@@ -230,9 +233,17 @@ run conf = do
         , metaDidAutoStop = didAutoStop
         }
 
-  -- Compute the structure function
-  let oneTau q = 
-        let moms = fmap (oneMoment conf' pfxs q) (cfgPrefixLengths conf')
+      -- Compute the sets of prefixes at each length with valid scaling behavior
+      validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
+      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf') -- [0..32]
+
+      -- TODO: add counts of valid pfxs at each prefix length to metadata...
+
+      -- Compute the structure function
+      oneTau q = 
+        let moms :: [(Double, Double)]
+            moms = fmap (oneMoment conf' q) validPfxs
+            
             n = fromIntegral (length moms)
             tauTilde = moms
               & fmap fst
@@ -257,47 +268,56 @@ run conf = do
 
 
 {-
- - Compute the modified O&W estimator for a single prefix length and q pair
- -
- - Returns the estimated tau(q) and variance
+ - Filters the prefix map to remove atomic and nearly-full prefixes at pl.
+ - Returns maps for the valid prefixes at pl and their children at pl + 1
  -}
-oneMoment :: Config -> PrefixMap Double -> Double -> Int -> (Double, Double)
-oneMoment conf pm q pl =
-  -- TODO: count the total number of prefixes actually considered (after atomic and full filtering) and write to metadata
-  -- actually only need to do it for one q-value...? ops!
-  -- better way is to first compute the filter sets of prefixes at each prefix length, (then counting is trivial) and this is all more efficient...
-  -- the nasty part is dealing with the variance term cause it requires another lookup into the tree structure!
+filterValidPrefixes :: Config -> PrefixMap Double -> Int -> (HashMap Prefix Double, HashMap Prefix Double)
+filterValidPrefixes conf pm pl =
   let removeAtomicAndFull count pfx _ =
-        let pl = PM.prefixLength pfx
+        let pl' = PM.prefixLength pfx
             delta = cfgFullThresh conf
-        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl) < 1.0 - delta
+        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl') < 1.0 - delta
         
       thisPl = pm
         & PM.sliceAtLength pl
         & PM.filterCount removeAtomicAndFull
+        & PM.leaves
+        & filter ((== pl) . PM.prefixLength . fst) -- catch any leaves shorter than pl that filterCount might have left in
+        & HM.fromList
 
       nextPl = pm
         & PM.sliceAtLength (pl + 1)
-        & PM.filter (\pfx _ -> PM.prefixLength pfx <= pl || PM.lookupDefault 0 thisPl (PM.preserve_upper_bits32 pfx pl) > 0)        
-
-      -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
-      total = treeFold (+) 0.0 $ fmap snd $ PM.leaves thisPl
-
-      nextZ = nextPl
         & PM.leaves
-        & filter ((== pl + 1) . PM.prefixLength . fst) -- Have to explicitly reject internal prefixes in nextPl cause PM.filter above may preserve them as leaves at /pl
-        & fmap ((** q) . (/ total) . snd)
+        & filter ((`HM.member` thisPl) . (flip PM.preserve_upper_bits32 pl) . fst)
+        & HM.fromList
+        
+  in (thisPl, nextPl)
+
+
+{-
+ - Compute the modified O&W estimator for a single prefix length and q pair
+ -
+ - Returns the estimated tau(q) and variance
+ -}
+oneMoment :: Config -> Double -> (HashMap Prefix Double, HashMap Prefix Double) -> (Double, Double)
+oneMoment conf q (thisPl, nextPl) =
+
+  -- Note that any normalization cancels out, but we do it anyway because it may help numeric precision (i.e., to avoid sums of super large/small values)
+  let total = treeFold (+) 0.0 (HM.elems thisPl)
+
+      thisZ = HM.elems thisPl
+        & fmap ((** q) . (/ total))
         & treeFold (+) 0.0
 
-      thisZ = thisPl
-        & PM.leaves
-        & fmap ((** q) . (/ total) . snd)
+      nextZ = HM.elems nextPl
+        & fmap ((** q) . (/ total))
         & treeFold (+) 0.0
 
       oneD2 (pfx, count) =
-        let childSum = PM.children pfx
-              & fmap (PM.lookupDefault 0 nextPl)
-              & filter (> 0)
+        let childSum = PM.children pfx -- [Prefix]
+              & fmap (`HM.lookup` nextPl) -- [Maybe Double]
+              & filter isJust
+              & fmap fromJust -- [Double]
               & (\l -> if length l == 0 then error ("empty child list for prefix " ++ show pfx ++ " with count " ++ show count) else l)
               & fmap ((** q) . (/ total))
               & foldl1 (+)
@@ -305,8 +325,7 @@ oneMoment conf pm q pl =
         in (((mu ** q) / thisZ) - (childSum / nextZ)) ** 2.0
               
       d2 = thisPl
-        & PM.leaves
-        & filter (\(pfx, _) -> PM.prefixLength pfx == pl)
+        & HM.toList
         & fmap oneD2
         & treeFold (+) 0.0
 
