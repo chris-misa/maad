@@ -109,6 +109,7 @@ data Metadata = Metadata
   , metaDidAutoStop :: Bool
   , metaPrefixCounts :: [(Int, Int)]
   , metaMultinomialFits :: [(Double, Double, Double)]
+  , metaPerPrefixLengthVars :: [(Int, Double, Double, Double)]
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -220,8 +221,8 @@ run conf = do
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extract_addr extract_meas
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
 
-  let !firstAtomicLength = 8 -- PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
-  let !firstFullLength = 24 -- maxPrefixLength -- HACKED
+  let !firstAtomicLength = 1 -- PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
+  let !firstFullLength = 30 -- maxPrefixLength -- HACKED
         -- case PM.firstFullLength (cfgFullThresh conf) pfxs of
         --   x | x < maxPrefixLength -> x
         --     | otherwise -> maxPrefixLength
@@ -234,22 +235,13 @@ run conf = do
       validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
       validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf')
 
-      metadata = Metadata
-        { metaInput = cfgFilepath conf
-        , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
-        , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
-        , metaTotalAddrs = length (PM.leaves pfxs)
-        , metaDidAutoStop = didAutoStop
-        , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
-        , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
-        }
+      -- Compute tauTilde at each prefix length, each value of q
+      allMoments :: [(Double, [(Double, Double)])]
+      allMoments = [(q, [oneMoment conf' q pfxs | pfxs <- validPfxs]) | q <- qs]
 
-      -- Compute the structure function
-      oneTau q = 
-        let moms :: [(Double, Double)]
-            moms = fmap (oneMoment conf' q) validPfxs
-            
-            n = fromIntegral (length moms)
+      -- Compute the structure function from all tauTildes
+      oneTau (q, moms) = 
+        let n = fromIntegral (length moms)
             tauTilde = moms
               & fmap fst
               & VU.fromList
@@ -260,8 +252,26 @@ run conf = do
               & ((/ n) . sqrt)
         in (q, tauTilde, sd)
 
-      taus = qs & VU.fromList & VU.map oneTau
+      taus = allMoments & fmap oneTau & VU.fromList
 
+      -- Just dump all the per-prefix-length variances and summarize later
+      perPrefixLengthVars :: [(Int, Double, Double, Double)]
+      perPrefixLengthVars =
+        [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf' `zip` moms)]
+  
+      -- Compute the metadata
+      metadata = Metadata
+        { metaInput = cfgFilepath conf
+        , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
+        , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
+        , metaTotalAddrs = length (PM.leaves pfxs)
+        , metaDidAutoStop = didAutoStop
+        , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
+        , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
+        , metaPerPrefixLengthVars = perPrefixLengthVars
+        }
+
+  
       -- Compute the other stuff if requested
       structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
       spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
@@ -493,6 +503,8 @@ writeMetadata conf metadata = do
       hPutStrLn hdl $ "prefix_count/" ++ show pl ++ "," ++ show count
     forM_ (metaMultinomialFits metadata `zip` metaPrefixCounts metadata) $ \((maxP, maxB, lower_limit), (pl, _)) ->
       hPutStrLn hdl $ "multinomial_fit/" ++ show pl ++ "," ++ show maxP ++ ":" ++ show maxB ++ ":" ++ show lower_limit
+    forM_ (metaPerPrefixLengthVars metadata) $ \(pl, q, tau, v) ->
+      hPutStrLn hdl $ "var/" ++ show pl ++ "," ++ show q ++ ":" ++ show tau ++ ":" ++ show v
 
 {-
  - Write the structure function
@@ -602,6 +614,7 @@ encodeMetadataJson metadata =
     , "totalAddrs" .= metaTotalAddrs metadata
     , "didAutoStop" .= metaDidAutoStop metadata
     , "prefix_counts" .= encodePrefixCountsJson (metaPrefixCounts metadata)
+    -- TODO: add multinomial fits and per-prefix-length variances!!!
     ]
 
 encodePrefixCountsJson :: [(Int, Int)] -> [Value]
