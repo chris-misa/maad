@@ -21,6 +21,8 @@ import Control.Monad
 import Data.Word
 import Data.Maybe
 
+import qualified Data.List as L
+
 import Data.Aeson ((.=), Value, encode, object)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
@@ -106,6 +108,7 @@ data Metadata = Metadata
   , metaTotalAddrs :: Int
   , metaDidAutoStop :: Bool
   , metaPrefixCounts :: [(Int, Int)]
+  , metaMultinomialFits :: [(Double, Double, Double)]
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -231,8 +234,6 @@ run conf = do
       validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
       validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf')
 
-      -- TODO: compute the multinomial thing for each measure subset in validPfxs
-  
       metadata = Metadata
         { metaInput = cfgFilepath conf
         , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
@@ -240,6 +241,7 @@ run conf = do
         , metaTotalAddrs = length (PM.leaves pfxs)
         , metaDidAutoStop = didAutoStop
         , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
+        , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
         }
 
       -- Compute the structure function
@@ -268,6 +270,27 @@ run conf = do
 
   -- Write output to csv files, std out, or json
   emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows
+
+{-
+ - 
+ -}
+multinomialFit :: Config -> (Int, HashMap Prefix Double) -> (Double, Double, Double)
+multinomialFit conf (len, pfxs) =
+  let n = HM.foldl' (+) 0.0 pfxs
+      b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+      lower_limit = sqrt b / 16
+      -- TODO: extract the prefix length??? -> len
+      (maxP, maxB) = HM.elems pfxs
+        -- & PM.sliceAtLength len
+        -- & PM.leavesCount -- [(Int, (Prefix, a))]
+        & fmap (/ n) -- [Double] -- the pi_i's
+        & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
+        & L.maximumBy (\l r -> compare (snd l) (snd r))
+  in (maxP, maxB, lower_limit)
+  -- maxB was maximum variance across all bins? then we normalize by the max probability and subtract the lower-limit?
+  -- in if idx > 0 && (maxB / maxP) - lower_limit < thresh
+  --    then (pfxs', True)
+  --    else processOne (idx + 1) pfxs' theRest
 
 
 {-
@@ -468,6 +491,8 @@ writeMetadata conf metadata = do
     hPutStrLn hdl $ "did_auto_stop," ++ show (metaDidAutoStop metadata)
     forM_ (metaPrefixCounts metadata) $ \(pl, count) ->
       hPutStrLn hdl $ "prefix_count/" ++ show pl ++ "," ++ show count
+    forM_ (metaMultinomialFits metadata `zip` metaPrefixCounts metadata) $ \((maxP, maxB, lower_limit), (pl, _)) ->
+      hPutStrLn hdl $ "multinomial_fit/" ++ show pl ++ "," ++ show maxP ++ ":" ++ show maxB ++ ":" ++ show lower_limit
 
 {-
  - Write the structure function
@@ -589,6 +614,18 @@ encodePrefixCountsJson counts =
          ]
     )
     counts
+
+encodeMultinomialFits :: [(Double, Double, Double)] -> [Value]
+encodeMultinomialFits fits =
+  fmap
+    (\(maxP, maxB, lower_limit) ->
+       object
+         [ "maxP" .= maxP
+         , "maxB" .= maxB
+         , "lower_limit" .= lower_limit
+         ]
+    )
+    fits
 
 encodeStructureRowsJson :: [(Double, Double, Double)] -> [Value]
 encodeStructureRowsJson rows =
