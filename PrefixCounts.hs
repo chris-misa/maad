@@ -1,8 +1,10 @@
 {-
- - Copyright: 2025 Chris Misa
+ - Copyright: 2026 Chris Misa
  - License: (See ./LICENSE)
  -
  - Utility to compute the number of distinct prefixes as a function of prefix length
+ -
+ - Extended to also count the number of prefixes that branch at each prefix length
  -}
 
 module PrefixCounts where
@@ -37,10 +39,21 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      pfxs <- PM.fromFile filepath False head (const 1.0)
-      putStrLn "pl,n"
+      (pfxs, _) <- PM.fromFile filepath True Nothing (head . tail) (const 1.0)
+      putStrLn "pl,n,n_branches"
       forM_ [0..32] $ \pl -> do
         let n = pfxs & PM.sliceAtLength pl & PM.leaves & length
-        putStrLn $ show pl ++ "," ++ show n
+            n_branches = getNumBranches pl pfxs
+        putStrLn $ show pl ++ "," ++ show n ++ "," ++ show n_branches
     _ -> putStrLn usage
 
+
+getNumBranches :: Int -> PrefixMap a -> Int
+getNumBranches target_pl (PM.Node (Prefix _ pl) _ _ left right) =
+  if pl > target_pl
+  then 0
+  else if pl == target_pl
+  then case (left, right) of
+    (PM.Node _ _ _ _ _, PM.Node _ _ _ _ _) -> 1
+    _ -> 0
+  else getNumBranches target_pl left + getNumBranches target_pl right
