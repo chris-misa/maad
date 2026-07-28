@@ -107,6 +107,7 @@ data Metadata = Metadata
   , metaMaxPrefixLength :: Int
   , metaTotalAddrs :: Int
   , metaDidAutoStop :: Bool
+  , metaPreFilterPrefixCounts :: [(Int, Int)]
   , metaPrefixCounts :: [(Int, Int)]
   , metaMultinomialFits :: [(Double, Double, Double)]
   , metaPerPrefixLengthVars :: [(Int, Double, Double, Double)]
@@ -231,6 +232,10 @@ run conf = do
   hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
   let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstFullLength] }
 
+      -- Compute pre-filter per-prefix-length counts
+      preFilterPrefixCounts :: [(Int, Int)]
+      preFilterPrefixCounts = [(pl, length $ PM.leaves $ PM.sliceAtLength pl pfxs) | pl <- cfgPrefixLengths conf']
+  
       -- Compute the sets of prefixes at each length with valid scaling behavior
       validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
       validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf')
@@ -266,6 +271,7 @@ run conf = do
         , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
         , metaTotalAddrs = length (PM.leaves pfxs)
         , metaDidAutoStop = didAutoStop
+        , metaPreFilterPrefixCounts = preFilterPrefixCounts
         , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
         , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
         , metaPerPrefixLengthVars = perPrefixLengthVars
@@ -499,6 +505,8 @@ writeMetadata conf metadata = do
     hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
     hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
     hPutStrLn hdl $ "did_auto_stop," ++ show (metaDidAutoStop metadata)
+    forM_ (metaPreFilterPrefixCounts metadata) $ \(pl, count) ->
+      hPutStrLn hdl $ "pre_filter_prefix_count/" ++ show pl ++ "," ++ show count
     forM_ (metaPrefixCounts metadata) $ \(pl, count) ->
       hPutStrLn hdl $ "prefix_count/" ++ show pl ++ "," ++ show count
     forM_ (metaMultinomialFits metadata `zip` metaPrefixCounts metadata) $ \((maxP, maxB, lower_limit), (pl, _)) ->
@@ -614,7 +622,7 @@ encodeMetadataJson metadata =
     , "totalAddrs" .= metaTotalAddrs metadata
     , "didAutoStop" .= metaDidAutoStop metadata
     , "prefix_counts" .= encodePrefixCountsJson (metaPrefixCounts metadata)
-    -- TODO: add multinomial fits and per-prefix-length variances!!!
+    -- TODO: add pre-filter prefix counts, multinomial fits and per-prefix-length variances!!!
     ]
 
 encodePrefixCountsJson :: [(Int, Int)] -> [Value]
