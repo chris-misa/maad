@@ -54,11 +54,8 @@ defaultFullThreshold = 0.05
 maxPrefixLength :: Int
 maxPrefixLength = 24
 
-defaultAutoStopLength :: Int
-defaultAutoStopLength = 24
-
 defaultAutoStopThreshold :: Double
-defaultAutoStopThreshold = 0.01
+defaultAutoStopThreshold = 0.001
 
 deltaQ :: Double
 deltaQ = 1.0 / 8.0
@@ -91,7 +88,7 @@ data Config = Config
   , cfgSkipFirst :: Bool
   , cfgAtomicThresh :: Double
   , cfgFullThresh :: Double
-  , cfgAutoStop :: Maybe (Int, Double)
+  , cfgAutoStop :: Maybe Double
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -106,7 +103,7 @@ data Metadata = Metadata
   , metaMinPrefixLength :: Int
   , metaMaxPrefixLength :: Int
   , metaTotalAddrs :: Int
-  , metaDidAutoStop :: Bool
+  , metaDidAutoStop :: Maybe Int
   , metaPreFilterPrefixCounts :: [(Int, Int)]
   , metaPrefixCounts :: [(Int, Int)]
   , metaMultinomialFits :: [(Double, Double, Double)]
@@ -169,9 +166,9 @@ optparser = Config
                     <> value defaultFullThreshold <> showDefault
                     <> help "Threshold for determining when a prefix is estimated to be full. Mostly only important for determining max prefix length."
                   )
-  <*> flag Nothing (Just (defaultAutoStopLength, defaultAutoStopThreshold)) ( long "auto-stop"
-                                                                              <> help ("Automatically stop reading addresses after the estimated normalized CI around /" ++ show defaultAutoStopLength ++ " prefixes is smaller than " ++ show defaultAutoStopThreshold ++ ".")
-                                                                            )
+  <*> flag Nothing (Just defaultAutoStopThreshold) ( long "auto-stop"
+                                                     <> help ("Automatically stop reading addresses after the estimated normalized CI around max prefix length prefixes is smaller than " ++ show defaultAutoStopThreshold ++ ".")
+                                                   )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -221,6 +218,8 @@ run conf = do
                      Nothing -> const 1.0 -- default to constant 1.0 for each address
              in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extract_addr extract_meas
         else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
+
+  putStrLn $ "didAutoStop = " ++ show didAutoStop
 
   let !firstAtomicLength = 1 -- PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
   let !firstFullLength = 30 -- maxPrefixLength -- HACKED
@@ -504,7 +503,9 @@ writeMetadata conf metadata = do
     hPutStrLn hdl $ "min_prefix_length," ++ show (metaMinPrefixLength metadata)
     hPutStrLn hdl $ "max_prefix_length," ++ show (metaMaxPrefixLength metadata)
     hPutStrLn hdl $ "total_addrs," ++ show (metaTotalAddrs metadata)
-    hPutStrLn hdl $ "did_auto_stop," ++ show (metaDidAutoStop metadata)
+    hPutStrLn hdl $ "did_auto_stop," ++ case (metaDidAutoStop metadata) of
+      Just max_pl -> "True"
+      Nothing -> "False"
     forM_ (metaPreFilterPrefixCounts metadata) $ \(pl, count) ->
       hPutStrLn hdl $ "pre_filter_prefix_count/" ++ show pl ++ "," ++ show count
     forM_ (metaPrefixCounts metadata) $ \(pl, count) ->

@@ -310,45 +310,71 @@ measureCardinality pfxs =
         in M.insert count () (lmap `M.union` rmap)
   in M.size (mc pfxs)
 
+{-
+ - Decide if the given prefix map has a sufficient number of distinct IP addresses or not.
+ - In the case that it does, returns the maximum valid prefix length.
+ -}
+shouldStop :: Double -> PrefixMap a -> Double -> IO (Maybe Int)
+shouldStop n pfxs target_width = do
+  let prefixCounts :: [(Int, Int)]
+      prefixCounts = [(pl, length $ leaves $ sliceAtLength pl pfxs) | pl <- [1..30]]
+
+      subCount :: (Int, Int) -> (Int, Int) -> (Int, Int)
+      subCount (pl, count) (_, count') = (pl, count - count')
+      
+      bs = zipWith subCount prefixCounts ((0, 1) : prefixCounts)
+      dbs = zipWith subCount (drop 1 bs) bs
+
+      target_pl = dbs & dropWhile ((> 0) . snd) & head & fst
+
+      -- b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+      b = 46.03068 -- for p = 0.05 / (2^32) as the absolute worst-case...
+
+      -- TODO: technically b should be a function of target_pl, but it gets larger for larger pl so using a largest pl is a conservative choice.
+      -- TODO: the difference is because here we work on raw pfxs, no atomic/full filtering
+      -- TODO: should we revisit idea of normalizing by something?
+  
+      (maxP, maxB) = pfxs
+        & sliceAtLength target_pl
+        & leavesCount -- [(Int, (Prefix, a))]
+        & fmap ((/ n) . fromIntegral . fst) -- [Double] -- the pi_i's
+        & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
+        & L.maximumBy (\l r -> compare (snd l) (snd r))
+
+  putStrLn $ "Checking shouldStop at n = " ++ show n ++ " with maxB = " ++ show maxB ++ " target_pl = " ++ show target_pl
+  
+  if maxB * 2.0 < target_width
+  then return (Just target_pl)
+  else return Nothing
 
 {-
  - Reads a csv-type file and builds a PrefixMap.
- -
- - For each key, value pair (k, v) in the map,
- -   fst v is the number of addresses in k
- -   snd v is the result of getAux if prefixLength k == 32
  -}
 fromFile :: Num a
   => String -- the filepath to load
   -> Bool -- should we skip the first line?
-  -> Maybe (Int, Double) -- if Just (len, thresh), then auto-stop once normalized CI size at /len drops below thresh
+  -> Maybe Double -- if Just target_width, then auto-stop once max prefix length has multinomial CI width below target_width
   -> ([ByteString] -> ByteString) -- function that returns the IP address given a list of columns for a particular row
-  -> ([ByteString] -> a) -- function that returns any auxiliary metadata to associate with the row's address
-  -> IO (PrefixMap a, Bool) -- the resulting prefix map, flag indicating whether auto-stop happened or not
+  -> ([ByteString] -> a) -- function that returns any auxiliary metadata or weight to associate with the row's address
+  -> IO (PrefixMap a, Maybe Int) -- the resulting prefix map, flag indicating whether auto-stop happened or not and if it did, the max prefix length used for the multinomial decision
 fromFile filename skipHeader autoStop getAddr getAux = do
   let acc = case autoStop of
-        Nothing -> (,False) . foldl insert EmptyMap
-        Just (len, thresh) ->
+        Nothing -> return . (,Nothing) . foldl insert EmptyMap
+        Just target_width ->
           let processOne idx pfxs ((nextAddr, nextVal) : theRest) =
                 case lookup (addressToPrefix nextAddr) pfxs of
                   Nothing ->
                     let pfxs' = insertNoDup pfxs (nextAddr, nextVal)
-                    in if idx `mod` 10000 == 0 -- check auto-stop in batches of 10k for better performance
-                       then let n = fromIntegral (idx + 1)
-                                b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
-                                lower_limit = sqrt b / 16
-                                (maxP, maxB) = pfxs'
-                                  & sliceAtLength len
-                                  & leavesCount -- [(Int, (Prefix, a))]
-                                  & fmap ((/ fromIntegral n) . fromIntegral . fst) -- [Double] -- the pi_i's
-                                  & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / fromIntegral n))) -- [(Double, Double)] -- add the b_i's
-                                  & L.maximumBy (\l r -> compare (snd l) (snd r))
-                            in if idx > 0 && (maxB / maxP) - lower_limit < thresh
-                               then (pfxs', True)
-                               else processOne (idx + 1) pfxs' theRest
-                       else processOne (idx + 1) pfxs' theRest
+                    in if (idx + 1) `mod` 5000 == 0 -- check auto-stop in batches of 1k for better performance
+                    then do
+                      let n = fromIntegral (idx + 1)
+                      stop <- shouldStop n pfxs' target_width
+                      case stop of
+                        Just max_pl -> return (pfxs', Just max_pl)
+                        Nothing -> processOne (idx + 1) pfxs' theRest
+                    else processOne (idx + 1) pfxs' theRest
                   Just _ -> processOne idx pfxs theRest -- same as insert: skip duplicate addresses
-              processOne _ pfxs [] = (pfxs, False)
+              processOne _ pfxs [] = return (pfxs, Nothing)
           in processOne 0 EmptyMap
   contents <- if filename == "-" then BL.getContents else BL.readFile filename
   contents
@@ -357,4 +383,3 @@ fromFile filename skipHeader autoStop getAddr getAux = do
     & fmap (B.split ',' . BL.toStrict)
     & fmap ((string_to_ipv4 . getAddr) &&& getAux)
     & acc
-    & return
