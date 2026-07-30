@@ -4,6 +4,8 @@ ghc -O2 MAAD.hs -main-is MAAD
 
 # ghc -O2 CantorSet.hs -main-is CantorSet
 
+ghc -O2 UniformSet.hs -main-is UniformSet
+
 # ghc -O2 AtomicPrefixes.hs -main-is AtomicPrefixes
 
 # ghc -O2 PartitionFunctions.hs -main-is PartitionFunctions
@@ -22,7 +24,7 @@ ghc -O2 MAAD.hs -main-is MAAD
 # #ghc -O2 -prof -fprof-auto Spectrum.hs -main-is Spectrum
 # ghc -O2 Spectrum.hs -main-is Spectrum
 # 
-ghc -O2 PrefixCounts.hs -main-is PrefixCounts
+# ghc -O2 PrefixCounts.hs -main-is PrefixCounts
 # 
 # ghc -O2 SpectrumHistogram.hs -main-is SpectrumHistogram
 # 

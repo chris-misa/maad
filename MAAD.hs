@@ -88,6 +88,8 @@ data Config = Config
   , cfgFullThresh :: Double
   , cfgAutoStop :: Bool
   , cfgBTarget :: Double
+  , cfgForceMinPrefixLength :: Maybe Int
+  , cfgForceMaxPrefixLength :: Maybe Int
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -166,6 +168,12 @@ optparser = Config
   <*> option auto ( long "b-target" <> metavar "B_TARGET" <> value defaultAutoStopThreshold <> showDefault
                   <> help "The target CI width used if auto-stop is enabled."
                   )
+  <*> optional (option auto ( long "force-min-prefix-length" <> metavar "MIN_LEN"
+                            <> help "Override automatic determination of minimum prefix length."
+                            ))
+  <*> optional (option auto ( long "force-max-prefix-length" <> metavar "MAX_LEN"
+                            <> help "Override automatic determination of maximum prefix length."
+                            ))
   <*> pure []
 
 opts :: ParserInfo Config
@@ -221,14 +229,20 @@ run conf = do
 
   -- putStrLn $ "didAutoStop = " ++ show didAutoStop
 
-  let firstAtomicLength = defaultMinPrefixLength
-  let firstFullLength = case didAutoStop of
-        Just autoStopPl -> autoStopPl
-        Nothing -> defaultMaxPrefixLength
+  let minPrefixLength = case cfgForceMinPrefixLength conf of
+        Just pl -> pl
+        Nothing -> defaultMinPrefixLength
+  let maxPrefixLength = case cfgForceMaxPrefixLength conf of
+        Just pl -> pl
+        Nothing -> case didAutoStop of
+          Just autoStopPl -> autoStopPl
+          Nothing -> defaultMaxPrefixLength
 
-  hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
-  hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
-  let conf' = conf { cfgPrefixLengths = [firstAtomicLength .. firstFullLength] }
+  hPutStrLn stderr $ "Min prefix length: " ++ show minPrefixLength
+  hPutStrLn stderr $ "Max prefix length: " ++ show maxPrefixLength
+  when (minPrefixLength >= maxPrefixLength) (error "Invalid prefix length range. If this happens automatically, consider overriding prefix length range with --force-min-prefix-length and --force-max-prefix-length")
+  
+  let conf' = conf { cfgPrefixLengths = [minPrefixLength .. maxPrefixLength] }
 
       -- Compute pre-filter per-prefix-length counts
       preFilterPrefixCounts :: [(Int, Int)]
