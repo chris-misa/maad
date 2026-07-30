@@ -44,18 +44,17 @@ import Common
 import PrefixMap (Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
-defaultAtomicThreshold :: Double
-defaultAtomicThreshold = 0.0
-
 defaultFullThreshold :: Double
 defaultFullThreshold = 0.05
 
--- Hard max prefix length to avoid other nastiness at long prefix lengths (e.g., dynamic addressing, extreme sparseness)
-maxPrefixLength :: Int
-maxPrefixLength = 24
-
 defaultAutoStopThreshold :: Double
 defaultAutoStopThreshold = 0.001
+
+defaultMinPrefixLength :: Int
+defaultMinPrefixLength = 8
+
+defaultMaxPrefixLength :: Int
+defaultMaxPrefixLength = 24
 
 deltaQ :: Double
 deltaQ = 1.0 / 8.0
@@ -86,9 +85,9 @@ data Config = Config
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
   , cfgSkipFirst :: Bool
-  , cfgAtomicThresh :: Double
   , cfgFullThresh :: Double
-  , cfgAutoStop :: Maybe Double
+  , cfgAutoStop :: Bool
+  , cfgBTarget :: Double
   , cfgPrefixLengths :: [Int]
   }
   deriving (Show)
@@ -126,8 +125,8 @@ optparser = Config
                   <> help "File to read (csv or one address on each line)."
                 )
   <*> strOption ( long "output"
-                  <> metavar "FILEPATH_PREFIX"
-                  <> help "Prefix for output files, or - for stdout."
+                  <> metavar "OUT_PREFIX"
+                  <> help "Prefix for output files (for FORMAT = csv), output file (for FORMAT = json), or - for stdout."
                 )
   <*> option (eitherReader parseOutputFormat) ( long "format"
                                                 <> metavar "FORMAT"
@@ -158,17 +157,15 @@ optparser = Config
   <*> switch ( long "skip-first"
                <> help "Skip the first (header) row before reading the data."
              )
-  <*> option auto ( long "atomic-threshold" <> metavar "THRESH"
-                    <> value defaultAtomicThreshold <> showDefault
-                    <> help "Determine minimum prefix length as smallest prefix length where the fraction of atomic prefixes are at least THRESH."
-                  )
-  <*> option auto ( long "full-threshold" <> metavar "DELTA"
+  <*> option auto ( long "full-threshold" <> metavar "C"
                     <> value defaultFullThreshold <> showDefault
-                    <> help "Threshold for determining when a prefix is estimated to be full. Mostly only important for determining max prefix length."
+                    <> help "Threshold for determining nearly-full prefixes (based on how close log_2(mu) is to capacity at prefix length)."
                   )
-  <*> flag Nothing (Just defaultAutoStopThreshold) ( long "auto-stop"
-                                                     <> help ("Automatically stop reading addresses after the estimated normalized CI around max prefix length prefixes is smaller than " ++ show defaultAutoStopThreshold ++ ".")
-                                                   )
+  <*> switch ( long "auto-stop" <> help "Automatically stop reading addresses when the maximum estimated CI around counts at the (estimated) maximum significant prefix length is less than B_TARGET."
+             )
+  <*> option auto ( long "b-target" <> metavar "B_TARGET" <> value defaultAutoStopThreshold <> showDefault
+                  <> help "The target CI width used if auto-stop is enabled."
+                  )
   <*> pure []
 
 opts :: ParserInfo Config
@@ -210,22 +207,24 @@ run conf = do
 
   -- Load in the addresses and optional associated "weights"
   (pfxs, didAutoStop) <-
-        if cfgCsv conf
-        then let extract_addr = flip (!!) (fromMaybe 0 (cfgAddrCol conf)) -- default to column 0
-                 extract_meas =
-                   case cfgMeasureCol conf of
-                     Just col -> read . B.unpack . flip (!!) col
-                     Nothing -> const 1.0 -- default to constant 1.0 for each address
-             in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extract_addr extract_meas
-        else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) (cfgAutoStop conf) extractSingleAddr (const 1.0)
+    let autoStopConf = case cfgAutoStop conf of
+          True -> Just (cfgBTarget conf)
+          False -> Nothing
+    in if cfgCsv conf
+    then let extract_addr = flip (!!) (fromMaybe 0 (cfgAddrCol conf)) -- default to column 0
+             extract_meas =
+               case cfgMeasureCol conf of
+                 Just col -> read . B.unpack . flip (!!) col
+                 Nothing -> const 1.0 -- default to constant 1.0 for each address
+         in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) autoStopConf extract_addr extract_meas
+    else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) autoStopConf extractSingleAddr (const 1.0)
 
-  putStrLn $ "didAutoStop = " ++ show didAutoStop
+  -- putStrLn $ "didAutoStop = " ++ show didAutoStop
 
-  let !firstAtomicLength = 1 -- PM.firstAtomicLengthThreshold (cfgAtomicThresh conf) pfxs
-  let !firstFullLength = 30 -- maxPrefixLength -- HACKED
-        -- case PM.firstFullLength (cfgFullThresh conf) pfxs of
-        --   x | x < maxPrefixLength -> x
-        --     | otherwise -> maxPrefixLength
+  let firstAtomicLength = defaultMinPrefixLength
+  let firstFullLength = case didAutoStop of
+        Just autoStopPl -> autoStopPl
+        Nothing -> defaultMaxPrefixLength
 
   hPutStrLn stderr $ "Min prefix length: " ++ show firstAtomicLength
   hPutStrLn stderr $ "Max prefix length: " ++ show firstFullLength
@@ -287,26 +286,20 @@ run conf = do
   emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows
 
 {-
- - 
+ - Estimate multinomial CIs
+ - TODO: think about if we really need this since we're already doing it pre-filter now?
  -}
 multinomialFit :: Config -> (Int, HashMap Prefix Double) -> (Double, Double, Double)
 multinomialFit conf (len, pfxs) =
   let n = HM.foldl' (+) 0.0 pfxs
       b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
       lower_limit = sqrt b / 16
-      -- TODO: extract the prefix length??? -> len
       (maxP, maxB) = HM.elems pfxs
-        -- & PM.sliceAtLength len
-        -- & PM.leavesCount -- [(Int, (Prefix, a))]
         & fmap (/ n) -- [Double] -- the pi_i's
         & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
         & L.maximumBy (\l r -> compare (snd l) (snd r))
   in (maxP, maxB, lower_limit)
-  -- maxB was maximum variance across all bins? then we normalize by the max probability and subtract the lower-limit?
-  -- in if idx > 0 && (maxB / maxP) - lower_limit < thresh
-  --    then (pfxs', True)
-  --    else processOne (idx + 1) pfxs' theRest
-
+  
 
 {-
  - Filters the prefix map to remove atomic and nearly-full prefixes at pl.

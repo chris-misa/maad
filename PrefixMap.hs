@@ -341,7 +341,7 @@ shouldStop n pfxs target_width = do
         & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
         & L.maximumBy (\l r -> compare (snd l) (snd r))
 
-  putStrLn $ "Checking shouldStop at n = " ++ show n ++ " with maxB = " ++ show maxB ++ " target_pl = " ++ show target_pl
+  -- putStrLn $ "Checking shouldStop at n = " ++ show n ++ " with maxB = " ++ show maxB ++ " target_pl = " ++ show target_pl
   
   if maxB * 2.0 < target_width
   then return (Just target_pl)
@@ -365,7 +365,7 @@ fromFile filename skipHeader autoStop getAddr getAux = do
                 case lookup (addressToPrefix nextAddr) pfxs of
                   Nothing ->
                     let pfxs' = insertNoDup pfxs (nextAddr, nextVal)
-                    in if (idx + 1) `mod` 5000 == 0 -- check auto-stop in batches of 1k for better performance
+                    in if (idx + 1) `mod` 10000 == 0 -- check auto-stop in batches of 1k for better performance
                     then do
                       let n = fromIntegral (idx + 1)
                       stop <- shouldStop n pfxs' target_width
