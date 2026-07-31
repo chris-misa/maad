@@ -81,6 +81,7 @@ data Config = Config
   , cfgSpectrum :: Bool
   , cfgDimensions :: Bool
   , cfgPartitions :: Bool
+  , cfgSingularities :: Bool
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
@@ -95,7 +96,7 @@ data Config = Config
   deriving (Show)
 
 requestedAnalysisCount :: Config -> Int
-requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions, cfgPartitions ]
+requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions, cfgPartitions, cfgSingularities ]
   & fmap (\f -> if f conf then 1 else 0)
   & foldl1 (+)
 
@@ -148,6 +149,9 @@ optparser = Config
   <*> switch ( long "partitions" <> short 'p'
                <> help "Compute partition functions (OUT_PREFIX_partitions.csv). (Note that this uses a different range of q values than the other estimates.)"
              )
+  <*> switch ( long "singularities" <> short 'e'
+               <> help "Compute the singularities or Hölder exponents estimated at each IP address."
+             )
   <*> switch ( long "csv"
                <> help "Input file is csv (with multiple columns that need to be parsed)."
              )
@@ -192,7 +196,7 @@ main = do
 
   -- Verify that the configuration given in the arguments is valid
   when (requestedAnalysisCount conf <= 0) $
-    dieWith "Must specify one of --structure, --spectrum, --dimensions, or --partitions to compute."
+    dieWith "Must specify one of --structure, --spectrum, --dimensions, --partitions, or --singularities to compute."
     
   when ((isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)) $
     dieWith "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
@@ -295,9 +299,10 @@ run conf = do
       spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
       partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
+      singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
 
   -- Write output to csv files, std out, or json
-  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows
+  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
 
 {-
  - Estimate multinomial CIs
@@ -458,6 +463,35 @@ computePartitions conf pfxs =
   in fmap oneQ [-2.0, -1.9..4.0]
 
 {-
+ - Report the singularity estimates of each address w.r.t. the prefix map
+ - Returns (alpha, (address, intercept, r2, number of prefix-lengths actually used))
+ -}
+computeSingularities :: Config -> PrefixMap Double -> [(Double, (Word32, Double, Double, Int))]
+computeSingularities conf pfxs =
+  let addrs = PM.leaves pfxs
+
+      total = treeFold (+) 0.0 $ fmap snd addrs
+
+      getSingularity :: (Prefix, Double) -> (Double, (Word32, Double, Double, Int))
+      getSingularity (Prefix addr 32, _) =
+        let oneLevel l =
+              let pfx = PM.preserve_upper_bits32 (Prefix addr 32) l
+                  mu = fromJust $ PM.lookup pfx pfxs
+                  muNorm = mu  / total
+              in (- logBase 2 muNorm, mu /= 1)
+  
+            muLogs = VU.generate 33 oneLevel & VU.takeWhile snd & VU.map fst
+            pl = VU.generate (VU.length muLogs) fromIntegral
+
+            (coef, r2) = Reg.olsRegress [pl] muLogs
+        in (coef VU.! 0, (addr, coef VU.! 1, r2, VU.length muLogs))
+      getSingularity (Prefix _ pl, _) = error $ "Got a /" ++ show pl ++ " prefix as a leaf in computeSingularities. Something's broken."
+
+  in addrs
+     & fmap getSingularity
+     & L.sortOn fst
+
+{-
  - Emit results in the requested output format.
  - Just dispatch based on csv or json.
  -}
@@ -467,6 +501,7 @@ emitResults :: Config
             -> Maybe [(Double, Double)]
             -> Maybe [(Double, Double)]
             -> Maybe [(Double, [(Double, Double)])]
+            -> Maybe [(Double, (Word32, Double, Double, Int))]
             -> IO ()
 emitResults conf =
   case cfgFormat conf of
@@ -482,20 +517,23 @@ emitCsvResults :: Config
                -> Maybe [(Double, Double)]
                -> Maybe [(Double, Double)]
                -> Maybe [(Double, [(Double, Double)])]
+               -> Maybe [(Double, (Word32, Double, Double, Int))]
                -> IO ()
-emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows =
+emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows =
   if cfgOutPrefix conf == "-"
   then do
     maybe (return ()) (writeStructureCsv stdout) structureRows
     maybe (return ()) (writeSpectrumCsv stdout) spectrumRows
     maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
     maybe (return ()) (writePartitionsCsv stdout) partitionsRows
+    maybe (return ()) (writeSingularities stdout) singularitiesRows
   else do
     writeMetadata conf metadata
     maybe (return ()) (writeStructureFile conf) structureRows
     maybe (return ()) (writeSpectrumFile conf) spectrumRows
     maybe (return ()) (writeDimensionsFile conf) dimensionRows
     maybe (return ()) (writePartitionsFile conf) partitionsRows
+    maybe (return ()) (writeSingularitiesFile conf) singularitiesRows
 
 {-
  - Write some metadata to keep track of config and parameters that were auto-generated here
@@ -586,6 +624,25 @@ writePartitionsCsv hdl rows = do
                  hPutStrLn hdl (show q ++ "," ++ show pl ++ "," ++ show z)
 
 {-
+ - Write singularities
+ -}
+writeSingularitiesFile :: Config -> [(Double, (Word32, Double, Double, Int))] -> IO ()
+writeSingularitiesFile conf rows = do
+  let outfile = cfgOutPrefix conf ++ "_singularities.csv"
+  hPutStrLn stderr $ "Writing singularities to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeSingularities hdl rows)
+
+writeSingularities :: Handle -> [(Double, (Word32, Double, Double, Int))] -> IO ()
+writeSingularities hdl rows = do
+  hPutStrLn hdl "alpha,addr,intercept,r2,num_levels"
+  forM_ rows $ \(alpha, (addr, intercept, r2, num_levels)) -> do
+    hPutStrLn hdl $ show alpha
+      ++ "," ++ B.unpack (ipv4_to_string addr)
+      ++ "," ++ show intercept
+      ++ "," ++ show r2
+      ++ "," ++ show num_levels
+
+{-
  - Emit json results to stdout or file.
  -}
 emitJsonResults :: Config
@@ -594,9 +651,10 @@ emitJsonResults :: Config
                 -> Maybe [(Double, Double)]
                 -> Maybe [(Double, Double)]
                 -> Maybe [(Double, [(Double, Double)])]
+                -> Maybe [(Double, (Word32, Double, Double, Int))]
                 -> IO ()
-emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows = do
-  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows
+emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows = do
+  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
   if cfgOutPrefix conf == "-"
   then BL8.putStrLn payload
   else do
@@ -609,8 +667,9 @@ encodeResultsJson :: Metadata
                   -> Maybe [(Double, Double)]
                   -> Maybe [(Double, Double)]
                   -> Maybe [(Double, [(Double, Double)])]
+                  -> Maybe [(Double, (Word32, Double, Double, Int))]
                   -> BL8.ByteString
-encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows =
+encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows =
   encode $
     object $
       [ "schemaVersion" .= (1 :: Int)
@@ -620,6 +679,7 @@ encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRo
       ++ maybe [] (\rows -> ["spectrum" .= encodeSpectrumRowsJson rows]) spectrumRows
       ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) dimensionRows
       ++ maybe [] (\rows -> ["partitions" .= encodePartitionsRowsJson rows]) partitionsRows
+      ++ maybe [] (\rows -> ["singularities" .= encodeSingularitiesRowsJson rows]) singularitiesRows
 
 encodeMetadataJson :: Metadata -> Value
 encodeMetadataJson metadata =
@@ -702,5 +762,18 @@ encodePartitionsRowsJson =
                ]
             ) zs
     )
-    
+
+encodeSingularitiesRowsJson :: [(Double, (Word32, Double, Double, Int))] -> [Value]
+encodeSingularitiesRowsJson =
+  fmap
+    (\(alpha, (addr, intercept, r2, num_levels)) ->
+        object
+        [ "alpha" .= alpha
+        , "addr" .= B.unpack (ipv4_to_string addr)
+        , "intercept" .= intercept
+        , "r2" .= r2
+        , "num_levels" .= num_levels
+        ]
+    )
+
 
