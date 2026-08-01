@@ -246,19 +246,33 @@ run conf = do
   hPutStrLn stderr $ "Max prefix length: " ++ show maxPrefixLength
   when (minPrefixLength >= maxPrefixLength) (error "Invalid prefix length range. If this happens automatically, consider overriding prefix length range with --force-min-prefix-length and --force-max-prefix-length")
   
-  let conf' = conf { cfgPrefixLengths = [minPrefixLength .. maxPrefixLength] }
+  let initialPrefixLengths = [minPrefixLength .. maxPrefixLength]
 
       -- Compute pre-filter per-prefix-length counts
       preFilterPrefixCounts :: [(Int, Int)]
-      preFilterPrefixCounts = [(pl, length $ PM.leaves $ PM.sliceAtLength pl pfxs) | pl <- cfgPrefixLengths conf']
+      preFilterPrefixCounts = [(pl, length $ PM.leaves $ PM.sliceAtLength pl pfxs) | pl <- initialPrefixLengths]
   
       -- Compute the sets of prefixes at each length with valid scaling behavior
-      validPfxs :: [(HashMap Prefix Double, HashMap Prefix Double)]
-      validPfxs = fmap (filterValidPrefixes conf' pfxs) (cfgPrefixLengths conf')
+      validPfxsEmpties :: [(HashMap Prefix Double, HashMap Prefix Double)]
+      validPfxsEmpties = fmap (filterValidPrefixes conf pfxs) initialPrefixLengths
+
+      -- Filter out prefix lengths where there are actually zero valid prefixes
+      validPfxsLengths = zip initialPrefixLengths validPfxsEmpties
+                         & filter ((> 0) . HM.size . fst . snd)
+
+      validLengths = fmap fst validPfxsLengths
+      validPfxs = fmap snd validPfxsLengths
+
+  -- Warn if we filtered any prefix lengths due to zero valid prefixes
+  when (length validPfxsEmpties /= length validPfxs) $ do
+    hPutStrLn stderr $ "WARNING: dropping the following prefix lengths because they had no valid prefixes:" ++ show (initialPrefixLengths & filter (not . flip elem validLengths))
+
+  let conf' = conf { cfgPrefixLengths = validLengths }
 
       -- Compute tauTilde at each prefix length, each value of q
       allMoments :: [(Double, [(Double, Double)])]
       allMoments = [(q, [oneMoment conf' q pfxs | pfxs <- validPfxs]) | q <- qs]
+
 
       -- Compute the structure function from all tauTildes
       oneTau (q, moms) = 
@@ -282,7 +296,7 @@ run conf = do
   
       -- Compute the metadata
       metadata = Metadata
-        { metaInput = cfgFilepath conf
+        { metaInput = cfgFilepath conf'
         , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
         , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
         , metaTotalAddrs = length (PM.leaves pfxs)
