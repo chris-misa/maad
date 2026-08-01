@@ -309,15 +309,17 @@ run conf = do
  - TODO: think about if we really need this since we're already doing it pre-filter now?
  -}
 multinomialFit :: Config -> (Int, HashMap Prefix Double) -> (Double, Double, Double)
-multinomialFit conf (len, pfxs) =
-  let n = HM.foldl' (+) 0.0 pfxs
-      b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
-      lower_limit = sqrt b / 16
-      (maxP, maxB) = HM.elems pfxs
-        & fmap (/ n) -- [Double] -- the pi_i's
-        & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
-        & L.maximumBy (\l r -> compare (snd l) (snd r))
-  in (maxP, maxB, lower_limit)
+multinomialFit conf (len, pfxs)
+  | HM.size pfxs > 0 =
+    let n = HM.foldl' (+) 0.0 pfxs
+        b = 35.1967321136596 -- Upper tail of the (0.05 / 2^24)-quantile of the Chi distribution with one degree of freedom (Computed in R with: qchisq(p = 0.05 / (2^24), df = 1, lower.tail = FALSE))
+        lower_limit = sqrt b / 16
+        (maxP, maxB) = HM.elems pfxs
+          & fmap (/ n) -- [Double] -- the pi_i's
+          & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
+          & L.maximumBy (\l r -> compare (snd l) (snd r))
+    in (maxP, maxB, lower_limit)
+  | otherwise = (0, 0, 0)
   
 
 {-
