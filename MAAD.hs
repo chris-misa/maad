@@ -308,7 +308,7 @@ run conf = do
         }
 
   
-      -- Compute the other stuff if requested
+      -- Compute what was requested
       structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
       spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
