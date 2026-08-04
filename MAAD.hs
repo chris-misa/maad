@@ -82,6 +82,7 @@ data Config = Config
   , cfgDimensions :: Bool
   , cfgPartitions :: Bool
   , cfgSingularities :: Bool
+  , cfgTestFile :: Maybe String
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
@@ -152,6 +153,9 @@ optparser = Config
   <*> switch ( long "singularities" <> short 'e'
                <> help "Compute the singularities or Hölder exponents estimated at each IP address."
              )
+  <*> optional (option auto ( long "test" <> metavar "FILEPATH2"
+                            <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
+                            ))
   <*> switch ( long "csv"
                <> help "Input file is csv (with multiple columns that need to be parsed)."
              )
