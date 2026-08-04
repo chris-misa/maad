@@ -39,6 +39,10 @@ import Data.TreeFold (treeFold)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 
+import qualified Numeric.LinearAlgebra as LA
+import Statistics.Distribution.FDistribution (fDistribution)
+import Statistics.Distribution (cumulative)
+
 -- Local imports
 import Common
 import PrefixMap (Prefix(..), PrefixMap)
@@ -97,7 +101,14 @@ data Config = Config
   deriving (Show)
 
 requestedAnalysisCount :: Config -> Int
-requestedAnalysisCount conf = [ cfgStructure, cfgSpectrum, cfgDimensions, cfgPartitions, cfgSingularities ]
+requestedAnalysisCount conf =
+  [ cfgStructure
+  , cfgSpectrum
+  , cfgDimensions
+  , cfgPartitions
+  , cfgSingularities
+  , isJust . cfgTestFile
+  ]
   & fmap (\f -> if f conf then 1 else 0)
   & foldl1 (+)
 
@@ -153,7 +164,7 @@ optparser = Config
   <*> switch ( long "singularities" <> short 'e'
                <> help "Compute the singularities or Hölder exponents estimated at each IP address."
              )
-  <*> optional (option auto ( long "test" <> metavar "FILEPATH2"
+  <*> optional (strOption ( long "test" <> metavar "FILEPATH2"
                             <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
                             ))
   <*> switch ( long "csv"
@@ -247,9 +258,13 @@ run conf = do
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
       partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
       singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
+  testResult <- case cfgTestFile conf' of
+    Just testfile -> fmap Just (computeT2Test conf' testfile perPrefixLengthVars)
+    Nothing -> return Nothing
 
   -- Write output to csv files, std out, or json
   emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
+
 
 {-
  - Load addresses from file using parameters specified in the configuration
@@ -349,6 +364,78 @@ computeTauTilde conf validPfxs =
       perPrefixLengthVars =
         [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf `zip` moms)]
   in (taus, perPrefixLengthVars)
+
+computeT2Test :: Config -> String -> [(Int, Double, Double, Double)] -> IO Double
+computeT2Test conf testfile baselinePerPrefixLengths = do
+
+  -- First load the test addresses and compute their tauTilde values
+  -- Override the prefix lengths and disable auto-stop to make comparison more direct
+
+  let testConf = conf { cfgAutoStop = False
+                      , cfgForceMinPrefixLength = Just (minimum (cfgPrefixLengths conf))
+                      , cfgForceMaxPrefixLength = Just (maximum (cfgPrefixLengths conf))
+                      }
+  (testPfxs, _) <- loadAddresses testConf testfile
+  
+  (_, testPfxs, _) <- buildValidPrefixes testConf testPfxs Nothing
+  
+  let (_, testPerPrefixLengths) = computeTauTilde testConf testPfxs
+
+      -- Number of samples: each prefix length is considered a sample
+  let n = length (cfgPrefixLengths conf)
+
+      -- Size of each sample: each q value is considered a dimension of the sample
+      p = length qs
+
+      -- Form sample matrices: each row is a q value, each column is a prefix length value
+      x = LA.fromLists
+        ( qs & fmap (\target_q -> baselinePerPrefixLengths
+                      & filter (\(_, q, _, _) -> q == target_q)
+                      & fmap (\(_, _, tau, sd) -> tau)
+                    )
+        )
+
+      -- mean over all columns
+      xBar = [0 .. p - 1]
+        & fmap (\row_idx -> LA.sumElements (x LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
+        & LA.vector
+
+  
+      y = LA.fromLists
+        ( qs & fmap (\target_q -> testPerPrefixLengths
+                      & filter (\(_, q, _, _) -> q == target_q)
+                      & fmap (\(_, _, tau, sd) -> tau)
+                    )
+        )
+
+      -- mean over all columns
+      yBar = [0 .. p - 1]
+        & fmap (\row_idx -> LA.sumElements (y LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
+        & LA.vector
+
+      z = y - x
+      zBar = yBar - xBar
+
+      sHat = [0 .. n - 1]
+        & fmap (\col_idx ->
+                  let zi = LA.flatten (z LA.?? (LA.All, LA.Pos (LA.idxs [col_idx])))
+                  in LA.outer (zi - zBar) (zi - zBar)
+               )
+        & foldl1 (+)
+        & (/ fromIntegral n)
+
+      gamma = ((fromIntegral n - fromIntegral p) / fromIntegral p) * (zBar LA.<.> (LA.inv sHat LA.#> zBar))
+
+      pValue = 1.0 - cumulative (fDistribution p (n - p)) gamma
+
+  putStrLn $ "gamma = " ++ show gamma
+  putStrLn $ "p-value = " ++ show pValue
+
+  return 0.0
+
+-- LA.?? for indexing (e.g., for matrices (row index, col index)
+-- LA.All or LA.Pos or LA.Range to form indices
+-- LA.flatten to convert matrix to vector
 
 
 {-
