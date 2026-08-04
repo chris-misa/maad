@@ -263,7 +263,7 @@ run conf = do
     Nothing -> return Nothing
 
   -- Write output to csv files, std out, or json
-  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
+  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult
 
 
 {-
@@ -365,31 +365,60 @@ computeTauTilde conf validPfxs =
         [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf `zip` moms)]
   in (taus, perPrefixLengthVars)
 
-computeT2Test :: Config -> String -> [(Int, Double, Double, Double)] -> IO Double
+
+{-
+ - Load the addresses in testfile and compare them against the addresses represented by baselinePerPrefixLengths
+ - The null hypothesis is that the addresses in testfile have the same distribution as baselinePerPrefixLengths.
+ -
+ - Returns:
+ - * the p-value of the test (probability of the observation if the null hypothesis is true)
+ - * the raw value of the F-distributed estimator
+ - * the number of prefix lengths used (i.e., number of samples)
+ - * the number of q values used (i.e., the dimension of the assumed underlying multivariate Normal distribution)
+ -}
+computeT2Test :: Config -> String -> [(Int, Double, Double, Double)] -> IO (Double, Double, Int, Int)
 computeT2Test conf testfile baselinePerPrefixLengths = do
 
   -- First load the test addresses and compute their tauTilde values
   -- Override the prefix lengths and disable auto-stop to make comparison more direct
-
   let testConf = conf { cfgAutoStop = False
                       , cfgForceMinPrefixLength = Just (minimum (cfgPrefixLengths conf))
                       , cfgForceMaxPrefixLength = Just (maximum (cfgPrefixLengths conf))
                       }
+        
   (testPfxs, _) <- loadAddresses testConf testfile
   
-  (_, testPfxs, _) <- buildValidPrefixes testConf testPfxs Nothing
-  
-  let (_, testPerPrefixLengths) = computeTauTilde testConf testPfxs
+  (testLengths, testPfxsValid, _) <- buildValidPrefixes testConf testPfxs Nothing
+
+  let (_, testPerPrefixLengths) = computeTauTilde (testConf { cfgPrefixLengths = testLengths }) testPfxsValid
+
+      -- Figure out intersection of cfgPrefixLengths conf and testLengths and only use those in the following
+      validLengths = cfgPrefixLengths conf `L.intersect` testLengths
+
+      -- Filter both baseline and test prefixes based on validLengths
+  let baselines = baselinePerPrefixLengths
+        & filter (\(pl, _, _, _) -> elem pl validLengths)
+
+      tests = testPerPrefixLengths
+        & filter (\(pl, _, _, _) -> elem pl validLengths)
+
+      -- Need number of qs values smaller than number of prefix lengths
+      -- could be a more elegant way to handle this...
+      testQs = filter (\q -> q >= 0.0 && q <= 2.0) qs
+        & take (length validLengths - 1)
+
+  when (length testQs >= length validLengths) $
+    error $ "Test doesn't work if there are not more valid prefix lengths than q values! Current intersection of valid prefix lengths in both baseline and test sets is " ++ show validLengths ++ " and current list of q values is " ++ show testQs
 
       -- Number of samples: each prefix length is considered a sample
-  let n = length (cfgPrefixLengths conf)
+  let n = length validLengths
 
       -- Size of each sample: each q value is considered a dimension of the sample
-      p = length qs
+      p = length testQs
 
       -- Form sample matrices: each row is a q value, each column is a prefix length value
       x = LA.fromLists
-        ( qs & fmap (\target_q -> baselinePerPrefixLengths
+        ( testQs & fmap (\target_q -> baselines
                       & filter (\(_, q, _, _) -> q == target_q)
                       & fmap (\(_, _, tau, sd) -> tau)
                     )
@@ -399,10 +428,11 @@ computeT2Test conf testfile baselinePerPrefixLengths = do
       xBar = [0 .. p - 1]
         & fmap (\row_idx -> LA.sumElements (x LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
         & LA.vector
+        & (/ fromIntegral p)
 
   
       y = LA.fromLists
-        ( qs & fmap (\target_q -> testPerPrefixLengths
+        ( testQs & fmap (\target_q -> tests
                       & filter (\(_, q, _, _) -> q == target_q)
                       & fmap (\(_, _, tau, sd) -> tau)
                     )
@@ -412,6 +442,7 @@ computeT2Test conf testfile baselinePerPrefixLengths = do
       yBar = [0 .. p - 1]
         & fmap (\row_idx -> LA.sumElements (y LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
         & LA.vector
+        & (/ fromIntegral p)
 
       z = y - x
       zBar = yBar - xBar
@@ -428,14 +459,7 @@ computeT2Test conf testfile baselinePerPrefixLengths = do
 
       pValue = 1.0 - cumulative (fDistribution p (n - p)) gamma
 
-  putStrLn $ "gamma = " ++ show gamma
-  putStrLn $ "p-value = " ++ show pValue
-
-  return 0.0
-
--- LA.?? for indexing (e.g., for matrices (row index, col index)
--- LA.All or LA.Pos or LA.Range to form indices
--- LA.flatten to convert matrix to vector
+  return (pValue, gamma, n, p)
 
 
 {-
@@ -638,6 +662,7 @@ emitResults :: Config
             -> Maybe [(Double, Double)]
             -> Maybe [(Double, [(Double, Double)])]
             -> Maybe [(Double, (Word32, Double, Double, Int))]
+            -> Maybe (Double, Double, Int, Int)
             -> IO ()
 emitResults conf =
   case cfgFormat conf of
@@ -654,8 +679,9 @@ emitCsvResults :: Config
                -> Maybe [(Double, Double)]
                -> Maybe [(Double, [(Double, Double)])]
                -> Maybe [(Double, (Word32, Double, Double, Int))]
+               -> Maybe (Double, Double, Int, Int)
                -> IO ()
-emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows =
+emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult =
   if cfgOutPrefix conf == "-"
   then do
     maybe (return ()) (writeStructureCsv stdout) structureRows
@@ -663,6 +689,7 @@ emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitions
     maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
     maybe (return ()) (writePartitionsCsv stdout) partitionsRows
     maybe (return ()) (writeSingularities stdout) singularitiesRows
+    maybe (return ()) (writeTestResult stdout) testResult
   else do
     writeMetadata conf metadata
     maybe (return ()) (writeStructureFile conf) structureRows
@@ -670,6 +697,7 @@ emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitions
     maybe (return ()) (writeDimensionsFile conf) dimensionRows
     maybe (return ()) (writePartitionsFile conf) partitionsRows
     maybe (return ()) (writeSingularitiesFile conf) singularitiesRows
+    maybe (return ()) (writeTestResultFile conf) testResult
 
 {-
  - Write some metadata to keep track of config and parameters that were auto-generated here
@@ -779,6 +807,23 @@ writeSingularities hdl rows = do
       ++ "," ++ show num_levels
 
 {-
+ - Write test results
+ -}
+writeTestResultFile :: Config -> (Double, Double, Int, Int) -> IO ()
+writeTestResultFile conf res = do
+  let outfile = cfgOutPrefix conf ++ "_test.csv"
+  hPutStrLn stderr $ "Writing test results to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeTestResult hdl res)
+
+writeTestResult :: Handle -> (Double, Double, Int, Int) -> IO ()
+writeTestResult hdl (p_val, gamma, n, p) = do
+  hPutStrLn hdl "p_value,gamma,n,p"
+  hPutStrLn hdl $ show p_val
+    ++ "," ++ show gamma
+    ++ "," ++ show n
+    ++ "," ++ show p
+
+{-
  - Emit json results to stdout or file.
  -}
 emitJsonResults :: Config
@@ -788,9 +833,10 @@ emitJsonResults :: Config
                 -> Maybe [(Double, Double)]
                 -> Maybe [(Double, [(Double, Double)])]
                 -> Maybe [(Double, (Word32, Double, Double, Int))]
+                -> Maybe (Double, Double, Int, Int)
                 -> IO ()
-emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows = do
-  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
+emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult = do
+  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult
   if cfgOutPrefix conf == "-"
   then BL8.putStrLn payload
   else do
@@ -804,8 +850,9 @@ encodeResultsJson :: Metadata
                   -> Maybe [(Double, Double)]
                   -> Maybe [(Double, [(Double, Double)])]
                   -> Maybe [(Double, (Word32, Double, Double, Int))]
+                  -> Maybe (Double, Double, Int, Int)
                   -> BL8.ByteString
-encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows =
+encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult =
   encode $
     object $
       [ "schemaVersion" .= (1 :: Int)
@@ -816,6 +863,7 @@ encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRo
       ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) dimensionRows
       ++ maybe [] (\rows -> ["partitions" .= encodePartitionsRowsJson rows]) partitionsRows
       ++ maybe [] (\rows -> ["singularities" .= encodeSingularitiesRowsJson rows]) singularitiesRows
+      -- TODO: add testResult!!
 
 encodeMetadataJson :: Metadata -> Value
 encodeMetadataJson metadata =
