@@ -213,26 +213,70 @@ main = do
 run :: Config -> IO ()
 run conf = do
 
+  (pfxs, didAutoStop) <- loadAddresses conf (cfgFilepath conf)
+
+  (validLengths, validPfxs, preFilterPrefixCounts) <- buildValidPrefixes conf pfxs didAutoStop
+
+  let conf' = conf { cfgPrefixLengths = validLengths }
+
+      (taus, perPrefixLengthVars) = computeTauTilde conf' validPfxs
+
+      -- TDOD add an option so we output per-prefix results only if asked for... 
+  
+      -- Compute the metadata
+      metadata = Metadata
+        { metaInput = cfgFilepath conf'
+        , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
+        , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
+        , metaTotalAddrs = length (PM.leaves pfxs)
+        , metaDidAutoStop = didAutoStop
+        , metaPreFilterPrefixCounts = preFilterPrefixCounts
+        , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
+        , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
+        , metaPerPrefixLengthVars = perPrefixLengthVars
+        }
+
+  
+      -- Compute what was requested
+      structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
+      spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
+      dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
+      partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
+      singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
+
+  -- Write output to csv files, std out, or json
+  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
+
+{-
+ - Load addresses from file using parameters specified in the configuration
+ -}
+loadAddresses :: Config -> String -> IO (PrefixMap Double, Maybe Int)
+loadAddresses conf filepath = do
   let extractSingleAddr :: [ByteString] -> ByteString
       extractSingleAddr (addr:_) = addr
       extractSingleAddr [] = error "Expected at least one column in each input row"
 
   -- Load in the addresses and optional associated "weights"
-  (pfxs, didAutoStop) <-
-    let autoStopConf = case cfgAutoStop conf of
+  let autoStopConf = case cfgAutoStop conf of
           True -> Just (cfgBTarget conf)
           False -> Nothing
-    in if cfgCsv conf
+
+  if cfgCsv conf
     then let extract_addr = flip (!!) (fromMaybe 0 (cfgAddrCol conf)) -- default to column 0
              extract_meas =
                case cfgMeasureCol conf of
                  Just col -> read . B.unpack . flip (!!) col
                  Nothing -> const 1.0 -- default to constant 1.0 for each address
-         in PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) autoStopConf extract_addr extract_meas
-    else PM.fromFile (cfgFilepath conf) (cfgSkipFirst conf) autoStopConf extractSingleAddr (const 1.0)
+         in PM.fromFile filepath (cfgSkipFirst conf) autoStopConf extract_addr extract_meas
+    else PM.fromFile filepath (cfgSkipFirst conf) autoStopConf extractSingleAddr (const 1.0)
 
-  -- putStrLn $ "didAutoStop = " ++ show didAutoStop
-
+{-
+ - Figure out prefix length range and build list of valid prefixes (and next-child prefixes) at each prefix length.
+ -
+ - In IO because it might need to print some warnings...
+ -}
+buildValidPrefixes :: Config -> PrefixMap Double -> Maybe Int -> IO ([Int], [(HashMap Prefix Double, HashMap Prefix Double)], [(Int, Int)])
+buildValidPrefixes conf pfxs didAutoStop = do
   let minPrefixLength = case cfgForceMinPrefixLength conf of
         Just pl -> pl
         Nothing -> defaultMinPrefixLength
@@ -267,11 +311,18 @@ run conf = do
   when (length validPfxsEmpties /= length validPfxs) $ do
     hPutStrLn stderr $ "WARNING: dropping the following prefix lengths because they had no valid prefixes:" ++ show (initialPrefixLengths & filter (not . flip elem validLengths))
 
-  let conf' = conf { cfgPrefixLengths = validLengths }
+  return (validLengths, validPfxs, preFilterPrefixCounts)
 
-      -- Compute tauTilde at each prefix length, each value of q
-      allMoments :: [(Double, [(Double, Double)])]
-      allMoments = [(q, [oneMoment conf' q pfxs | pfxs <- validPfxs]) | q <- qs]
+{-
+ - Computes the tauTilde estimator using the given prefix lengths and per-prefix-length maps
+ - Returns both the averaged tauTilde vs. q result as well as the per-prefix-length estimates
+ -}
+computeTauTilde :: Config -> [(HashMap Prefix Double, HashMap Prefix Double)] -> (VU.Vector (Double, Double, Double), [(Int, Double, Double, Double)])
+computeTauTilde conf validPfxs =
+
+  -- Compute tauTilde at each prefix length, each value of q
+  let allMoments :: [(Double, [(Double, Double)])]
+      allMoments = [(q, [oneMoment conf q pfxs | pfxs <- validPfxs]) | q <- qs]
 
 
       -- Compute the structure function from all tauTildes
@@ -292,31 +343,9 @@ run conf = do
       -- Just dump all the per-prefix-length variances and summarize later
       perPrefixLengthVars :: [(Int, Double, Double, Double)]
       perPrefixLengthVars =
-        [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf' `zip` moms)]
-  
-      -- Compute the metadata
-      metadata = Metadata
-        { metaInput = cfgFilepath conf'
-        , metaMinPrefixLength = foldl1 min (cfgPrefixLengths conf')
-        , metaMaxPrefixLength = foldl1 max (cfgPrefixLengths conf')
-        , metaTotalAddrs = length (PM.leaves pfxs)
-        , metaDidAutoStop = didAutoStop
-        , metaPreFilterPrefixCounts = preFilterPrefixCounts
-        , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
-        , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
-        , metaPerPrefixLengthVars = perPrefixLengthVars
-        }
+        [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf `zip` moms)]
+  in (taus, perPrefixLengthVars)
 
-  
-      -- Compute what was requested
-      structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
-      spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
-      dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
-      partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
-      singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
-
-  -- Write output to csv files, std out, or json
-  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows
 
 {-
  - Estimate multinomial CIs
