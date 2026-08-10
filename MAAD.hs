@@ -325,6 +325,12 @@ computeZTest conf taus =
   -- the O&W estimators variance approaches zero in the perfectly-uniform case...
   -- also, it goes to zero faster than tauTilde0 + tauTilde2 goes to zero...
 
+  -- probably need to use multi-variate test instead of this different based approach?
+  -- tau(0) = -1 with extremely low variance -> strong evidence for null hypothesis
+  -- tau(1) = 0.99999 with some variance -> weak evidence against null hypothesis
+  -- ... but in current thing it just sees tau(0) + tau(1) = 0.01 with very low variance
+  
+
 computeWeights :: Config
                -> [Int]
                -> [(HashMap Prefix Double, HashMap Prefix Double)]
@@ -505,10 +511,8 @@ computeT2Test conf testfile baselinePerPrefixLengths = do
       tests = testPerPrefixLengths
         & filter (\(pl, _, _, _) -> elem pl validLengths)
 
-      -- Need number of qs values smaller than number of prefix lengths
-      -- could be a more elegant way to handle this...
-      testQs = filter (\q -> q >= 0.0 && q <= 2.0) qs
-        & take (length validLengths - 1)
+      -- Just look at q-values corresponding to D_0 and D_2
+      testQs = [0.0, 2.0]
 
   when (length testQs >= length validLengths) $
     error $ "Test doesn't work if there are not more valid prefix lengths than q values! Current intersection of valid prefix lengths in both baseline and test sets is " ++ show validLengths ++ " and current list of q values is " ++ show testQs
