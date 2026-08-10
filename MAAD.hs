@@ -19,6 +19,7 @@ import Control.Arrow
 import Control.Monad
 
 import Data.Word
+import Data.Bits
 import Data.Maybe
 
 import qualified Data.List as L
@@ -41,6 +42,7 @@ import qualified Data.HashMap.Strict as HM
 
 import qualified Numeric.LinearAlgebra as LA
 import Statistics.Distribution.FDistribution (fDistribution)
+import Statistics.Distribution.Normal (normalDistr)
 import Statistics.Distribution (cumulative)
 
 -- Local imports
@@ -86,6 +88,8 @@ data Config = Config
   , cfgDimensions :: Bool
   , cfgPartitions :: Bool
   , cfgSingularities :: Bool
+  , cfgWeights :: Bool
+  , cfgTest :: Bool
   , cfgTestFile :: Maybe String
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
@@ -107,6 +111,8 @@ requestedAnalysisCount conf =
   , cfgDimensions
   , cfgPartitions
   , cfgSingularities
+  , cfgWeights
+  , cfgTest
   , isJust . cfgTestFile
   ]
   & fmap (\f -> if f conf then 1 else 0)
@@ -122,6 +128,17 @@ data Metadata = Metadata
   , metaPrefixCounts :: [(Int, Int)]
   , metaMultinomialFits :: [(Double, Double, Double)]
   , metaPerPrefixLengthVars :: [(Int, Double, Double, Double)]
+  }
+
+data Results = Results
+  { resStructure :: Maybe [(Double, Double, Double)]
+  , resSpectrum :: Maybe [(Double, Double)]
+  , resDimensions :: Maybe [(Double, Double)]
+  , resPartitions :: Maybe [(Double, [(Double, Double)])]
+  , resSingularities :: Maybe [(Double, (Word32, Double, Double, Int))]
+  , resWeights :: Maybe [(Int, Word32, Double, Double, Double)]
+  , resTest :: Maybe (Double, Double, (Double, Double), (Double, Double))
+  , resCompare :: Maybe (Double, Double, Int, Int)
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -164,7 +181,13 @@ optparser = Config
   <*> switch ( long "singularities" <> short 'e'
                <> help "Compute the singularities or Hölder exponents estimated at each IP address."
              )
-  <*> optional (strOption ( long "test" <> metavar "FILEPATH2"
+  <*> switch ( long "weights" <> short 'w'
+               <> help "Compute the weights at each node in the prefix tree."
+             )
+  <*> switch ( long "test"
+               <> help "Perform simple t-test for nonlinearity of the structure function based on q = 0 and q = 2."
+             )
+  <*> optional (strOption ( long "compare" <> metavar "FILEPATH2"
                             <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
                             ))
   <*> switch ( long "csv"
@@ -211,7 +234,7 @@ main = do
 
   -- Verify that the configuration given in the arguments is valid
   when (requestedAnalysisCount conf <= 0) $
-    dieWith "Must specify one of --structure, --spectrum, --dimensions, --partitions, or --singularities to compute."
+    dieWith "Must specify one of --structure, --spectrum, --dimensions, --partitions, --singularities, --weights, --test, or --compare to compute."
     
   when ((isJust (cfgAddrCol conf) || isJust (cfgMeasureCol conf)) && not (cfgCsv conf)) $
     dieWith "To specify --addr-col or --meas-col, you must also indicate the input is a csv file by specifying --csv"
@@ -258,13 +281,65 @@ run conf = do
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
       partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
       singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
-  testResult <- case cfgTestFile conf' of
+      weightsRows = if cfgWeights conf' then Just (computeWeights conf' validLengths validPfxs) else Nothing
+      testResult = if cfgTest conf' then Just (computeZTest conf' taus) else Nothing
+  compareResult <- case cfgTestFile conf' of
     Just testfile -> fmap Just (computeT2Test conf' testfile perPrefixLengthVars)
     Nothing -> return Nothing
 
   -- Write output to csv files, std out, or json
-  emitResults conf' metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult
+  emitResults conf' metadata $ Results
+    { resStructure = structureRows
+    , resSpectrum = spectrumRows
+    , resDimensions = dimensionRows
+    , resPartitions = partitionsRows
+    , resSingularities = singularitiesRows
+    , resWeights = weightsRows
+    , resTest = testResult
+    , resCompare = compareResult
+    }
 
+computeZTest :: Config -> VU.Vector (Double, Double, Double) -> (Double, Double, (Double, Double), (Double, Double))
+computeZTest conf taus =
+  let (_, tauTilde0, sd0) = case VU.find (\(q, _, _) -> q == 0.0) taus of
+        Just t -> t
+        Nothing -> error $ "Failed to find q == 0.0!"
+      (_, tauTilde2, sd2) = case VU.find (\(q, _, _) -> q == 2.0) taus of
+        Just t -> t
+        Nothing -> error $ "Failed to find q == 2.0!"
+
+  -- Under null hypothesis that the measure is not multifractal, we have tau0 + tau2 == 0 (because tau1 == 0)
+  -- Also, tauTilde0 + tauTilde2 is Normal with mean tau0 + tau2 = 0 and variance sd0^2 + sd1^2
+  -- use two-tailed z-test
+      z = (tauTilde0 + tauTilde2) / sqrt (sd0 ** 2.0 + sd2 ** 2.0)
+      p = 2.0 * cumulative (normalDistr 0.0 1.0) (- abs z)
+  in (p, z, (tauTilde0, sd0), (tauTilde2, sd2))
+
+  -- turns out this doesn't work that well because the variances are super low---so it's over sensitive.
+  -- e.g., for uniform the absolute value tauTilde0 + tauTilde1 is smaller, but the variance is so low that the z statistic becomes way more extreme than in the real-world case where the variance is higher...
+
+  -- interestingly, for the Cantor-set construction, we get much higher p-values (e.g., 0.83 using /8 - /16)
+  -- this is not because the thing is more curved, but because the variance is higher (similar to real-world).
+
+  -- still should check if there's any reason to suspect the O&W variance is under-estimating!
+  -- the O&W estimators variance approaches zero in the perfectly-uniform case...
+  -- also, it goes to zero faster than tauTilde0 + tauTilde2 goes to zero...
+
+computeWeights :: Config
+               -> [Int]
+               -> [(HashMap Prefix Double, HashMap Prefix Double)]
+               -> [(Int, Word32, Double, Double, Double)]
+computeWeights conf pls pfxs =
+  let onePl (pl, (thisPl, nextPl)) = thisPl
+        & HM.toList
+        & fmap (\(pfx, mu) ->
+                  let addr = PM.prefixToAddress pfx
+                      left = HM.lookupDefault 0.0 (Prefix addr (pl + 1)) nextPl
+                      -- for sanity checking, also compute the right weight manually like this
+                      right = HM.lookupDefault 0.0 (Prefix (addr .|. (1 `shiftL` (32 - (pl + 1)))) (pl + 1)) nextPl
+                  in (pl, addr, mu, left / mu, right / mu)
+               )
+  in concatMap onePl (pls `zip` pfxs)
 
 {-
  - Load addresses from file using parameters specified in the configuration
@@ -331,6 +406,34 @@ buildValidPrefixes conf pfxs didAutoStop = do
     hPutStrLn stderr $ "WARNING: dropping the following prefix lengths because they had no valid prefixes:" ++ show (initialPrefixLengths & filter (not . flip elem validLengths))
 
   return (validLengths, validPfxs, preFilterPrefixCounts)
+
+
+{-
+ - Filters the prefix map to remove atomic and nearly-full prefixes at pl.
+ - Returns maps for the valid prefixes at pl and their children at pl + 1
+ -}
+filterValidPrefixes :: Config -> PrefixMap Double -> Int -> (HashMap Prefix Double, HashMap Prefix Double)
+filterValidPrefixes conf pm pl =
+  let removeAtomicAndFull count pfx _ =
+        let pl' = PM.prefixLength pfx
+            delta = cfgFullThresh conf
+        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl') < 1.0 - delta
+        
+      thisPl = pm
+        & PM.sliceAtLength pl
+        & PM.filterCount removeAtomicAndFull
+        & PM.leaves
+        & filter ((== pl) . PM.prefixLength . fst) -- catch any leaves shorter than pl that filterCount might have left in
+        & HM.fromList
+
+      nextPl = pm
+        & PM.sliceAtLength (pl + 1)
+        & PM.leaves
+        & filter ((`HM.member` thisPl) . (flip PM.preserve_upper_bits32 pl) . fst)
+        & HM.fromList
+        
+  in (thisPl, nextPl)
+
 
 {-
  - Computes the tauTilde estimator using the given prefix lengths and per-prefix-length maps
@@ -479,32 +582,6 @@ multinomialFit conf (len, pfxs)
     in (maxP, maxB, lower_limit)
   | otherwise = (0, 0, 0)
   
-
-{-
- - Filters the prefix map to remove atomic and nearly-full prefixes at pl.
- - Returns maps for the valid prefixes at pl and their children at pl + 1
- -}
-filterValidPrefixes :: Config -> PrefixMap Double -> Int -> (HashMap Prefix Double, HashMap Prefix Double)
-filterValidPrefixes conf pm pl =
-  let removeAtomicAndFull count pfx _ =
-        let pl' = PM.prefixLength pfx
-            delta = cfgFullThresh conf
-        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl') < 1.0 - delta
-        
-      thisPl = pm
-        & PM.sliceAtLength pl
-        & PM.filterCount removeAtomicAndFull
-        & PM.leaves
-        & filter ((== pl) . PM.prefixLength . fst) -- catch any leaves shorter than pl that filterCount might have left in
-        & HM.fromList
-
-      nextPl = pm
-        & PM.sliceAtLength (pl + 1)
-        & PM.leaves
-        & filter ((`HM.member` thisPl) . (flip PM.preserve_upper_bits32 pl) . fst)
-        & HM.fromList
-        
-  in (thisPl, nextPl)
 
 
 {-
@@ -657,12 +734,7 @@ computeSingularities conf pfxs =
  -}
 emitResults :: Config
             -> Metadata
-            -> Maybe [(Double, Double, Double)]
-            -> Maybe [(Double, Double)]
-            -> Maybe [(Double, Double)]
-            -> Maybe [(Double, [(Double, Double)])]
-            -> Maybe [(Double, (Word32, Double, Double, Int))]
-            -> Maybe (Double, Double, Int, Int)
+            -> Results
             -> IO ()
 emitResults conf =
   case cfgFormat conf of
@@ -674,30 +746,29 @@ emitResults conf =
  -}
 emitCsvResults :: Config
                -> Metadata
-               -> Maybe [(Double, Double, Double)]
-               -> Maybe [(Double, Double)]
-               -> Maybe [(Double, Double)]
-               -> Maybe [(Double, [(Double, Double)])]
-               -> Maybe [(Double, (Word32, Double, Double, Int))]
-               -> Maybe (Double, Double, Int, Int)
+               -> Results
                -> IO ()
-emitCsvResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult =
+emitCsvResults conf metadata res =
   if cfgOutPrefix conf == "-"
   then do
-    maybe (return ()) (writeStructureCsv stdout) structureRows
-    maybe (return ()) (writeSpectrumCsv stdout) spectrumRows
-    maybe (return ()) (writeDimensionsCsv stdout) dimensionRows
-    maybe (return ()) (writePartitionsCsv stdout) partitionsRows
-    maybe (return ()) (writeSingularities stdout) singularitiesRows
-    maybe (return ()) (writeTestResult stdout) testResult
+    maybe (return ()) (writeStructureCsv stdout) (resStructure res)
+    maybe (return ()) (writeSpectrumCsv stdout) (resSpectrum res)
+    maybe (return ()) (writeDimensionsCsv stdout) (resDimensions res)
+    maybe (return ()) (writePartitionsCsv stdout) (resPartitions res)
+    maybe (return ()) (writeSingularities stdout) (resSingularities res)
+    maybe (return ()) (writeWeights stdout) (resWeights res)
+    maybe (return ()) (writeZTestResult stdout) (resTest res)
+    maybe (return ()) (writeT2TestResult stdout) (resCompare res)
   else do
     writeMetadata conf metadata
-    maybe (return ()) (writeStructureFile conf) structureRows
-    maybe (return ()) (writeSpectrumFile conf) spectrumRows
-    maybe (return ()) (writeDimensionsFile conf) dimensionRows
-    maybe (return ()) (writePartitionsFile conf) partitionsRows
-    maybe (return ()) (writeSingularitiesFile conf) singularitiesRows
-    maybe (return ()) (writeTestResultFile conf) testResult
+    maybe (return ()) (writeStructureFile conf) (resStructure res)
+    maybe (return ()) (writeSpectrumFile conf) (resSpectrum res)
+    maybe (return ()) (writeDimensionsFile conf) (resDimensions res)
+    maybe (return ()) (writePartitionsFile conf) (resPartitions res)
+    maybe (return ()) (writeSingularitiesFile conf) (resSingularities res)
+    maybe (return ()) (writeWeightsFile conf) (resWeights res)
+    maybe (return ()) (writeZTestResultFile conf) (resTest res)
+    maybe (return ()) (writeT2TestResultFile conf) (resCompare res)
 
 {-
  - Write some metadata to keep track of config and parameters that were auto-generated here
@@ -807,16 +878,55 @@ writeSingularities hdl rows = do
       ++ "," ++ show num_levels
 
 {-
- - Write test results
+ - Write singularities
  -}
-writeTestResultFile :: Config -> (Double, Double, Int, Int) -> IO ()
-writeTestResultFile conf res = do
-  let outfile = cfgOutPrefix conf ++ "_test.csv"
-  hPutStrLn stderr $ "Writing test results to " ++ outfile
-  withFile outfile WriteMode (\hdl -> writeTestResult hdl res)
+writeWeightsFile :: Config -> [(Int, Word32, Double, Double, Double)] -> IO ()
+writeWeightsFile conf rows = do
+  let outfile = cfgOutPrefix conf ++ "_weights.csv"
+  hPutStrLn stderr $ "Writing weightsto " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeWeights hdl rows)
 
-writeTestResult :: Handle -> (Double, Double, Int, Int) -> IO ()
-writeTestResult hdl (p_val, gamma, n, p) = do
+writeWeights :: Handle -> [(Int, Word32, Double, Double, Double)] -> IO ()
+writeWeights hdl rows = do
+  hPutStrLn hdl "pl,addr,mu,left,right"
+  forM_ rows $ \(pl, addr, mu, left, right) -> do
+    hPutStrLn hdl $ show pl
+      ++ "," ++ B.unpack (ipv4_to_string addr)
+      ++ "," ++ show mu
+      ++ "," ++ show left
+      ++ "," ++ show right
+
+
+{-
+ - Write t-test results
+ -}
+writeZTestResultFile :: Config -> (Double, Double, (Double, Double), (Double, Double)) -> IO ()
+writeZTestResultFile conf res = do
+  let outfile = cfgOutPrefix conf ++ "_ttest.csv"
+  hPutStrLn stderr $ "Writing test results to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeZTestResult hdl res)
+
+writeZTestResult :: Handle -> (Double, Double, (Double, Double), (Double, Double)) -> IO ()
+writeZTestResult hdl (p, t, (tauTilde0, sd0), (tauTilde2, sd2)) = do
+  hPutStrLn hdl "p_value,t_value,tauTilde_0,sd_0,tauTilde_2,sd_2"
+  hPutStrLn hdl $ show p
+    ++ "," ++ show t
+    ++ "," ++ show tauTilde0
+    ++ "," ++ show sd0
+    ++ "," ++ show tauTilde2
+    ++ "," ++ show sd2
+
+{-
+ - Write t2-test comparison results
+ -}
+writeT2TestResultFile :: Config -> (Double, Double, Int, Int) -> IO ()
+writeT2TestResultFile conf res = do
+  let outfile = cfgOutPrefix conf ++ "_compare.csv"
+  hPutStrLn stderr $ "Writing test results to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeT2TestResult hdl res)
+
+writeT2TestResult :: Handle -> (Double, Double, Int, Int) -> IO ()
+writeT2TestResult hdl (p_val, gamma, n, p) = do
   hPutStrLn hdl "p_value,gamma,n,p"
   hPutStrLn hdl $ show p_val
     ++ "," ++ show gamma
@@ -828,15 +938,10 @@ writeTestResult hdl (p_val, gamma, n, p) = do
  -}
 emitJsonResults :: Config
                 -> Metadata
-                -> Maybe [(Double, Double, Double)]
-                -> Maybe [(Double, Double)]
-                -> Maybe [(Double, Double)]
-                -> Maybe [(Double, [(Double, Double)])]
-                -> Maybe [(Double, (Word32, Double, Double, Int))]
-                -> Maybe (Double, Double, Int, Int)
+                -> Results
                 -> IO ()
-emitJsonResults conf metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult = do
-  let payload = encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult
+emitJsonResults conf metadata res = do
+  let payload = encodeResultsJson metadata res
   if cfgOutPrefix conf == "-"
   then BL8.putStrLn payload
   else do
@@ -845,25 +950,20 @@ emitJsonResults conf metadata structureRows spectrumRows dimensionRows partition
     BL8.writeFile outfile (payload <> "\n")
 
 encodeResultsJson :: Metadata
-                  -> Maybe [(Double, Double, Double)]
-                  -> Maybe [(Double, Double)]
-                  -> Maybe [(Double, Double)]
-                  -> Maybe [(Double, [(Double, Double)])]
-                  -> Maybe [(Double, (Word32, Double, Double, Int))]
-                  -> Maybe (Double, Double, Int, Int)
+                  -> Results
                   -> BL8.ByteString
-encodeResultsJson metadata structureRows spectrumRows dimensionRows partitionsRows singularitiesRows testResult =
+encodeResultsJson metadata res =
   encode $
     object $
       [ "schemaVersion" .= (1 :: Int)
       , "metadata" .= encodeMetadataJson metadata
       ]
-      ++ maybe [] (\rows -> ["structure" .= encodeStructureRowsJson rows]) structureRows
-      ++ maybe [] (\rows -> ["spectrum" .= encodeSpectrumRowsJson rows]) spectrumRows
-      ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) dimensionRows
-      ++ maybe [] (\rows -> ["partitions" .= encodePartitionsRowsJson rows]) partitionsRows
-      ++ maybe [] (\rows -> ["singularities" .= encodeSingularitiesRowsJson rows]) singularitiesRows
-      -- TODO: add testResult!!
+      ++ maybe [] (\rows -> ["structure" .= encodeStructureRowsJson rows]) (resStructure res)
+      ++ maybe [] (\rows -> ["spectrum" .= encodeSpectrumRowsJson rows]) (resSpectrum res)
+      ++ maybe [] (\rows -> ["dimensions" .= encodeDimensionRowsJson rows]) (resDimensions res)
+      ++ maybe [] (\rows -> ["partitions" .= encodePartitionsRowsJson rows]) (resPartitions res)
+      ++ maybe [] (\rows -> ["singularities" .= encodeSingularitiesRowsJson rows]) (resSingularities res)
+      -- TODO: add testResult: both t-test and t2-test/compare !!
 
 encodeMetadataJson :: Metadata -> Value
 encodeMetadataJson metadata =
