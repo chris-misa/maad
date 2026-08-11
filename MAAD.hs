@@ -511,8 +511,8 @@ computeT2Test conf testfile baselinePerPrefixLengths = do
       tests = testPerPrefixLengths
         & filter (\(pl, _, _, _) -> elem pl validLengths)
 
-      -- Just look at q-values corresponding to D_0 and D_2
-      testQs = [0.0, 2.0]
+      -- Just look at a fixed set of q-values known to be in the range of convergence
+      testQs = [0.0, 0.5, 1.5, 2.0]
 
   when (length testQs >= length validLengths) $
     error $ "Test doesn't work if there are not more valid prefix lengths than q values! Current intersection of valid prefix lengths in both baseline and test sets is " ++ show validLengths ++ " and current list of q values is " ++ show testQs
