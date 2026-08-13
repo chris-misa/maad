@@ -284,7 +284,7 @@ run conf = do
       weightsRows = if cfgWeights conf' then Just (computeWeights conf' validLengths validPfxs) else Nothing
       testResult = if cfgTest conf' then Just (computeZTest conf' taus) else Nothing
   compareResult <- case cfgTestFile conf' of
-    Just testfile -> fmap Just (computeT2Test conf' testfile perPrefixLengthVars)
+    Just testfile -> fmap Just (computeT2Test conf' testfile taus)
     Nothing -> return Nothing
 
   -- Write output to csv files, std out, or json
@@ -479,94 +479,86 @@ computeTauTilde conf validPfxs =
  - Load the addresses in testfile and compare them against the addresses represented by baselinePerPrefixLengths
  - The null hypothesis is that the addresses in testfile have the same distribution as baselinePerPrefixLengths.
  -
+ - baselineTaus :: Vector (q, tauTilde, sd)
+ -
+ - assume q values come in same order as testQs (e.g., increasing)
+ -
  - Returns:
  - * the p-value of the test (probability of the observation if the null hypothesis is true)
  - * the raw value of the F-distributed estimator
  - * the number of prefix lengths used (i.e., number of samples)
  - * the number of q values used (i.e., the dimension of the assumed underlying multivariate Normal distribution)
  -}
-computeT2Test :: Config -> String -> [(Int, Double, Double, Double)] -> IO (Double, Double, Int, Int)
-computeT2Test conf testfile baselinePerPrefixLengths = do
+computeT2Test :: Config -> String -> VU.Vector (Double, Double, Double) -> IO (Double, Double, Int, Int)
+computeT2Test conf testfile baselineTaus = do
 
   -- First load the test addresses and compute their tauTilde values
-  -- Override the prefix lengths and disable auto-stop to make comparison more direct
-  let testConf = conf { cfgAutoStop = False
-                      , cfgForceMinPrefixLength = Just (minimum (cfgPrefixLengths conf))
-                      , cfgForceMaxPrefixLength = Just (maximum (cfgPrefixLengths conf))
-                      }
         
-  (testPfxs, _) <- loadAddresses testConf testfile
+  (testPfxs, testAutoStopped) <- loadAddresses conf testfile
   
-  (testLengths, testPfxsValid, _) <- buildValidPrefixes testConf testPfxs Nothing
+  (testLengths, testPfxsValid, _) <- buildValidPrefixes conf testPfxs testAutoStopped
 
-  let (_, testPerPrefixLengths) = computeTauTilde (testConf { cfgPrefixLengths = testLengths }) testPfxsValid
+  let (testTaus, _) = computeTauTilde (conf { cfgPrefixLengths = testLengths }) testPfxsValid
 
-      -- Figure out intersection of cfgPrefixLengths conf and testLengths and only use those in the following
-      validLengths = cfgPrefixLengths conf `L.intersect` testLengths
+      -- Define sample size as number of prefix lengths considered.
+      -- Previously we used total number of addresses?
+      n :: Double
+      n = fromIntegral $ length $ cfgPrefixLengths conf
 
-      -- Filter both baseline and test prefixes based on validLengths
-  let baselines = baselinePerPrefixLengths
-        & filter (\(pl, _, _, _) -> elem pl validLengths)
-
-      tests = testPerPrefixLengths
-        & filter (\(pl, _, _, _) -> elem pl validLengths)
+      m :: Double
+      m = fromIntegral $ length testLengths
 
       -- Just look at a fixed set of q-values known to be in the range of convergence
       testQs = [0.0, 0.5, 1.5, 2.0]
 
-  when (length testQs >= length validLengths) $
-    error $ "Test doesn't work if there are not more valid prefix lengths than q values! Current intersection of valid prefix lengths in both baseline and test sets is " ++ show validLengths ++ " and current list of q values is " ++ show testQs
-
-      -- Number of samples: each prefix length is considered a sample
-  let n = length validLengths
-
       -- Size of each sample: each q value is considered a dimension of the sample
-      p = length testQs
+      p :: Double
+      p = fromIntegral $ length testQs
 
-      -- Form sample matrices: each row is a q value, each column is a prefix length value
-      x = LA.fromLists
-        ( testQs & fmap (\target_q -> baselines
-                      & filter (\(_, q, _, _) -> q == target_q)
-                      & fmap (\(_, _, tau, sd) -> tau)
-                    )
-        )
+      xBar :: LA.Vector Double
+      xBar = baselineTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, tau, _) -> tau)
+        & VU.toList
+        & LA.fromList
 
-      -- mean over all columns
-      xBar = [0 .. p - 1]
-        & fmap (\row_idx -> LA.sumElements (x LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
-        & LA.vector
-        & (/ fromIntegral p)
+      xVar :: LA.Matrix Double
+      xVar = baselineTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, _, sd) -> sd ** 2.0)
+        & VU.toList
+        & LA.fromList
+        & LA.diag -- assume each q is independent
 
-  
-      y = LA.fromLists
-        ( testQs & fmap (\target_q -> tests
-                      & filter (\(_, q, _, _) -> q == target_q)
-                      & fmap (\(_, _, tau, sd) -> tau)
-                    )
-        )
+      yBar :: LA.Vector Double
+      yBar = testTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, tau, _) -> tau)
+        & VU.toList
+        & LA.fromList
 
-      -- mean over all columns
-      yBar = [0 .. p - 1]
-        & fmap (\row_idx -> LA.sumElements (y LA.?? (LA.Pos (LA.idxs [row_idx]), LA.All)))
-        & LA.vector
-        & (/ fromIntegral p)
+      yVar :: LA.Matrix Double
+      yVar = testTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, _, sd) -> sd ** 2.0)
+        & VU.toList
+        & LA.fromList
+        & LA.diag -- assume each q is independent
 
-      z = y - x
-      zBar = yBar - xBar
+      -- pooled covariance
+      s :: LA.Matrix Double
+      s = (1.0 / (n + m - 2)) `LA.scale` (n `LA.scale` xVar + m `LA.scale` yVar)
 
-      sHat = [0 .. n - 1]
-        & fmap (\col_idx ->
-                  let zi = LA.flatten (z LA.?? (LA.All, LA.Pos (LA.idxs [col_idx])))
-                  in LA.outer (zi - zBar) (zi - zBar)
-               )
-        & foldl1 (+)
-        & (/ fromIntegral n)
+      delta2 = (((n + m - p - 1) * n * m) / ((n + m - 2) * p * (n + m)))
+        * ((yBar - xBar) LA.<# LA.inv s) LA.<.> (yBar - xBar)
 
-      gamma = ((fromIntegral n - fromIntegral p) / fromIntegral p) * (zBar LA.<.> (LA.inv sHat LA.#> zBar))
+  when (n + m - p - 1 <= 0) $
+    error $ "Failed to get enough prefix lengths for test with p = " ++ show p
 
-      pValue = 1.0 - cumulative (fDistribution p (n - p)) gamma
+        
+  let pValue = 1.0 - cumulative (fDistribution (round p) (round $ n + m - p - 1)) delta2
 
-  return (pValue, gamma, n, p)
+  return (pValue, delta2, round (n + m), round p)
 
 
 {-
