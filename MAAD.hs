@@ -138,7 +138,17 @@ data Results = Results
   , resSingularities :: Maybe [(Double, (Word32, Double, Double, Int))]
   , resWeights :: Maybe [(Int, Word32, Double, Double, Double)]
   , resTest :: Maybe (Double, Double, (Double, Double), (Double, Double))
-  , resCompare :: Maybe (Double, Double, Int, Int)
+  , resCompare :: Maybe CompareResult
+  }
+
+data CompareResult = CompareResult
+  { crPValue :: Double
+  , crDelta2 :: Double
+  , crN :: Double
+  , crM :: Double
+  , crP :: Double
+  , crNumBaselineAddrs :: Int
+  , crNumTestAddrs :: Int
   }
 
 parseOutputFormat :: String -> Either String OutputFormat
@@ -284,7 +294,7 @@ run conf = do
       weightsRows = if cfgWeights conf' then Just (computeWeights conf' validLengths validPfxs) else Nothing
       testResult = if cfgTest conf' then Just (computeZTest conf' taus) else Nothing
   compareResult <- case cfgTestFile conf' of
-    Just testfile -> fmap Just (computeT2Test conf' testfile taus)
+    Just testfile -> fmap Just (computeT2Test conf' testfile taus (length $ PM.leaves pfxs))
     Nothing -> return Nothing
 
   -- Write output to csv files, std out, or json
@@ -489,8 +499,8 @@ computeTauTilde conf validPfxs =
  - * the number of prefix lengths used (i.e., number of samples)
  - * the number of q values used (i.e., the dimension of the assumed underlying multivariate Normal distribution)
  -}
-computeT2Test :: Config -> String -> VU.Vector (Double, Double, Double) -> IO (Double, Double, Int, Int)
-computeT2Test conf testfile baselineTaus = do
+computeT2Test :: Config -> String -> VU.Vector (Double, Double, Double) -> Int  -> IO CompareResult
+computeT2Test conf testfile baselineTaus numAddresses = do
 
   -- First load the test addresses and compute their tauTilde values
         
@@ -500,16 +510,21 @@ computeT2Test conf testfile baselineTaus = do
 
   let (testTaus, _) = computeTauTilde (conf { cfgPrefixLengths = testLengths }) testPfxsValid
 
-      -- Define sample size as number of prefix lengths considered.
-      -- Previously we used total number of addresses?
+      -- Define sample size as the number of prefix lengths used
       n :: Double
       n = fromIntegral $ length $ cfgPrefixLengths conf
+      -- n = fromIntegral numAddresses
 
       m :: Double
       m = fromIntegral $ length testLengths
+      -- m = fromIntegral $ length $ PM.leaves testPfxs
 
       -- Just look at a fixed set of q-values known to be in the range of convergence
-      testQs = [0.0, 0.5, 1.5, 2.0]
+      -- testQs = [1.0/2.0, 3.0/4.0, 7.0/8.0, 9.0/8.0, 5.0/4.0, 3.0/2.0] -- best so far
+      testQs = [1.0/2.0, 5.0/8.0, 3.0/4.0, 7.0/8.0, 9.0/8.0, 5.0/4.0, 11.0/8.0, 3.0/2.0] -- best so far
+      -- testQs = qs
+      --   & filter (>= 0.0)
+      --   & filter (<= 2.0)
 
       -- Size of each sample: each q value is considered a dimension of the sample
       p :: Double
@@ -558,7 +573,15 @@ computeT2Test conf testfile baselineTaus = do
         
   let pValue = 1.0 - cumulative (fDistribution (round p) (round $ n + m - p - 1)) delta2
 
-  return (pValue, delta2, round (n + m), round p)
+  return $ CompareResult
+    { crPValue = pValue
+    , crDelta2 = delta2
+    , crN = n
+    , crM = m
+    , crP = p
+    , crNumBaselineAddrs = numAddresses
+    , crNumTestAddrs = length $ PM.leaves testPfxs
+    }
 
 
 {-
@@ -915,19 +938,22 @@ writeZTestResult hdl (p, t, (tauTilde0, sd0), (tauTilde2, sd2)) = do
 {-
  - Write t2-test comparison results
  -}
-writeT2TestResultFile :: Config -> (Double, Double, Int, Int) -> IO ()
+writeT2TestResultFile :: Config -> CompareResult -> IO ()
 writeT2TestResultFile conf res = do
   let outfile = cfgOutPrefix conf ++ "_compare.csv"
   hPutStrLn stderr $ "Writing test results to " ++ outfile
   withFile outfile WriteMode (\hdl -> writeT2TestResult hdl res)
 
-writeT2TestResult :: Handle -> (Double, Double, Int, Int) -> IO ()
-writeT2TestResult hdl (p_val, gamma, n, p) = do
-  hPutStrLn hdl "p_value,gamma,n,p"
-  hPutStrLn hdl $ show p_val
-    ++ "," ++ show gamma
-    ++ "," ++ show n
-    ++ "," ++ show p
+writeT2TestResult :: Handle -> CompareResult -> IO ()
+writeT2TestResult hdl res = do
+  hPutStrLn hdl "p_value,delta2,n,m,p,numBaselineAddrs,numTestAddrs"
+  hPutStrLn hdl $ show (crPValue res)
+    ++ "," ++ show (crDelta2 res)
+    ++ "," ++ show (crN res)
+    ++ "," ++ show (crM res)
+    ++ "," ++ show (crP res)
+    ++ "," ++ show (crNumBaselineAddrs res)
+    ++ "," ++ show (crNumTestAddrs res)
 
 {-
  - Emit json results to stdout or file.

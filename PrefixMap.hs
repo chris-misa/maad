@@ -341,7 +341,7 @@ shouldStop n pfxs target_width = do
         & fmap (\pi -> (pi, sqrt (b * pi * (1.0 - pi) / n))) -- [(Double, Double)] -- add the b_i's
         & L.maximumBy (\l r -> compare (snd l) (snd r))
 
-  putStrLn $ "Checking shouldStop at n = " ++ show n ++ " with maxB = " ++ show maxB ++ " target_pl = " ++ show target_pl
+  -- putStrLn $ "Checking shouldStop at n = " ++ show n ++ " with maxB = " ++ show maxB ++ " target_pl = " ++ show target_pl
   
   if maxB * 2.0 < target_width
   then return (Just target_pl)
