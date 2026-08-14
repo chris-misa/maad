@@ -128,6 +128,7 @@ data Metadata = Metadata
   , metaPrefixCounts :: [(Int, Int)]
   , metaMultinomialFits :: [(Double, Double, Double)]
   , metaPerPrefixLengthVars :: [(Int, Double, Double, Double)]
+  , metaCriticalRegion :: (Double, Double)
   }
 
 data Results = Results
@@ -282,6 +283,7 @@ run conf = do
         , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
         , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
         , metaPerPrefixLengthVars = perPrefixLengthVars
+        , metaCriticalRegion = computeCriticalRegion taus
         }
 
   
@@ -665,6 +667,34 @@ computeSpectrumRows taus =
         & fmap snd
   in diffs
 
+computeCriticalRegion :: VU.Vector (Double, Double, Double) -> (Double, Double)
+computeCriticalRegion taus =
+  let alphas = [1..VU.length taus - 2]
+        & fmap (\i ->
+                  let (_, prevTau, _) = taus VU.! (i - 1)
+                      (q, tau, _) = taus VU.! i
+                      (_, nextTau, _) = taus VU.! (i + 1)
+                      alpha = (nextTau - prevTau) / (2 * deltaQ)
+                      f = q * alpha - tau
+                  in (q, f)
+               )
+
+      qMax = alphas
+        & filter ((>= 1) . fst)
+        & filter ((> 0) . snd)
+        & fmap fst
+        & (1.0 :)
+        & maximum
+
+      qMin = alphas
+        & filter ((<= 0) . fst)
+        & filter ((> 0) . snd)
+        & fmap fst
+        & (0.0 :)
+        & minimum
+
+  in (qMax, qMin)
+
 {-
  - Compute generalized dimension rows.
  -}
@@ -813,6 +843,8 @@ writeMetadata conf metadata = do
       hPutStrLn hdl $ "multinomial_fit/" ++ show pl ++ "," ++ show maxP ++ ":" ++ show maxB ++ ":" ++ show lower_limit
     forM_ (metaPerPrefixLengthVars metadata) $ \(pl, q, tau, v) ->
       hPutStrLn hdl $ "var/" ++ show pl ++ "," ++ show q ++ ":" ++ show tau ++ ":" ++ show v
+    hPutStrLn hdl $ "q_max," ++ show (fst $ metaCriticalRegion metadata)
+    hPutStrLn hdl $ "q_min," ++ show (snd $ metaCriticalRegion metadata)
 
 {-
  - Write the structure function
