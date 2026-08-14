@@ -63,7 +63,7 @@ defaultMaxPrefixLength :: Int
 defaultMaxPrefixLength = 24
 
 deltaQ :: Double
-deltaQ = 1.0 / 8.0
+deltaQ = 1.0 / 16.0
 
 -- Min q based on theoretic range of normalicy of tauTilde(q)
 minQ :: Double
@@ -522,11 +522,7 @@ computeT2Test conf testfile baselineTaus numAddresses = do
       -- m = fromIntegral $ length $ PM.leaves testPfxs
 
       -- Just look at a fixed set of q-values known to be in the range of convergence
-      -- testQs = [1.0/2.0, 3.0/4.0, 7.0/8.0, 9.0/8.0, 5.0/4.0, 3.0/2.0] -- best so far
-      testQs = [1.0/2.0, 5.0/8.0, 3.0/4.0, 7.0/8.0, 9.0/8.0, 5.0/4.0, 11.0/8.0, 3.0/2.0] -- best so far
-      -- testQs = qs
-      --   & filter (>= 0.0)
-      --   & filter (<= 2.0)
+      testQs = [q | q <- qs, q >= 1.0/2.0 && q <= 3.0/2.0 && q /= 1.0]
 
       -- Size of each sample: each q value is considered a dimension of the sample
       p :: Double
