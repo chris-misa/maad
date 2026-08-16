@@ -9,6 +9,25 @@
  -
  -}
 
+
+{-
+
+v6 port considerations.
+
+1. Have to actually implement the min prefix length idea based on IANA data. (default to largest / smallest allocation for now: /12 or /23)
+2. Have to establish some default max prefix length in case auto-stop fails.
+3. All the places where Word32 is used as an address
+4. Add flag for v6 vs v4 input
+5. filterValidPrefixes and other functions
+
+
+Other book keeping:
+
+remove the post filter multinomialFit?
+make dump of per-pl tau estimates an output option not a metadata thing?
+
+-}
+
 module MAAD where
 
 import System.Environment
@@ -45,9 +64,11 @@ import Statistics.Distribution.FDistribution (fDistribution)
 import Statistics.Distribution.Normal (normalDistr)
 import Statistics.Distribution (cumulative)
 
+import Data.WideWord.Word128
+
 -- Local imports
 import Common
-import PrefixMap (Prefix(..), PrefixMap)
+import PrefixMap (Addr(..), Prefix(..), PrefixMap)
 import qualified PrefixMap as PM
 
 defaultFullThreshold :: Double
@@ -56,11 +77,17 @@ defaultFullThreshold = 0.05
 defaultAutoStopThreshold :: Double
 defaultAutoStopThreshold = 0.001
 
-defaultMinPrefixLength :: Int
-defaultMinPrefixLength = 8
+defaultMinPrefixLength4 :: Int
+defaultMinPrefixLength4 = 8
 
-defaultMaxPrefixLength :: Int
-defaultMaxPrefixLength = 24
+defaultMaxPrefixLength4 :: Int
+defaultMaxPrefixLength4 = 24
+
+defaultMinPrefixLength6 :: Int
+defaultMinPrefixLength6 = 12
+
+defaultMaxPrefixLength6 :: Int
+defaultMaxPrefixLength6 = 64
 
 deltaQ :: Double
 deltaQ = 1.0 / 16.0
@@ -91,6 +118,7 @@ data Config = Config
   , cfgWeights :: Bool
   , cfgTest :: Bool
   , cfgTestFile :: Maybe String
+  , cfgV6 :: Bool
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
   , cfgMeasureCol :: Maybe Int
@@ -136,8 +164,8 @@ data Results = Results
   , resSpectrum :: Maybe [(Double, Double)]
   , resDimensions :: Maybe [(Double, Double)]
   , resPartitions :: Maybe [(Double, [(Double, Double)])]
-  , resSingularities :: Maybe [(Double, (Word32, Double, Double, Int))]
-  , resWeights :: Maybe [(Int, Word32, Double, Double, Double)]
+  , resSingularities :: Maybe [(Double, (Addr, Double, Double, Int))]
+  , resWeights :: Maybe [(Int, Addr, Double, Double, Double)]
   , resTest :: Maybe (Double, Double, (Double, Double), (Double, Double))
   , resCompare :: Maybe CompareResult
   }
@@ -201,6 +229,9 @@ optparser = Config
   <*> optional (strOption ( long "compare" <> metavar "FILEPATH2"
                             <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
                             ))
+  <*> switch ( long "ipv6" <> short '6'
+               <> help "Input file contains IPv6 addresses instead of IPv4 addresses (the default)."
+             )
   <*> switch ( long "csv"
                <> help "Input file is csv (with multiple columns that need to be parsed)."
              )
@@ -337,7 +368,7 @@ computeZTest conf taus =
   -- the O&W estimators variance approaches zero in the perfectly-uniform case...
   -- also, it goes to zero faster than tauTilde0 + tauTilde2 goes to zero...
 
-  -- probably need to use multi-variate test instead of this different based approach?
+  -- probably need to use multi-variate test instead of this difference-based approach?
   -- tau(0) = -1 with extremely low variance -> strong evidence for null hypothesis
   -- tau(1) = 0.99999 with some variance -> weak evidence against null hypothesis
   -- ... but in current thing it just sees tau(0) + tau(1) = 0.01 with very low variance
@@ -346,15 +377,16 @@ computeZTest conf taus =
 computeWeights :: Config
                -> [Int]
                -> [(HashMap Prefix Double, HashMap Prefix Double)]
-               -> [(Int, Word32, Double, Double, Double)]
+               -> [(Int, Addr, Double, Double, Double)]
 computeWeights conf pls pfxs =
   let onePl (pl, (thisPl, nextPl)) = thisPl
         & HM.toList
         & fmap (\(pfx, mu) ->
                   let addr = PM.prefixToAddress pfx
-                      left = HM.lookupDefault 0.0 (Prefix addr (pl + 1)) nextPl
+                      [leftChild, rightChild] = PM.children pfx
+                      left = HM.lookupDefault 0.0 leftChild nextPl
                       -- for sanity checking, also compute the right weight manually like this
-                      right = HM.lookupDefault 0.0 (Prefix (addr .|. (1 `shiftL` (32 - (pl + 1)))) (pl + 1)) nextPl
+                      right = HM.lookupDefault 0.0 rightChild nextPl
                   in (pl, addr, mu, left / mu, right / mu)
                )
   in concatMap onePl (pls `zip` pfxs)
@@ -379,24 +411,31 @@ loadAddresses conf filepath = do
                case cfgMeasureCol conf of
                  Just col -> read . B.unpack . flip (!!) col
                  Nothing -> const 1.0 -- default to constant 1.0 for each address
-         in PM.fromFile filepath (cfgSkipFirst conf) autoStopConf extract_addr extract_meas
-    else PM.fromFile filepath (cfgSkipFirst conf) autoStopConf extractSingleAddr (const 1.0)
+         in PM.fromFile filepath (cfgV6 conf) (cfgSkipFirst conf) autoStopConf extract_addr extract_meas
+    else PM.fromFile filepath (cfgV6 conf) (cfgSkipFirst conf) autoStopConf extractSingleAddr (const 1.0)
 
 {-
  - Figure out prefix length range and build list of valid prefixes (and next-child prefixes) at each prefix length.
  -
  - In IO because it might need to print some warnings...
  -}
-buildValidPrefixes :: Config -> PrefixMap Double -> Maybe Int -> IO ([Int], [(HashMap Prefix Double, HashMap Prefix Double)], [(Int, Int)])
+buildValidPrefixes :: Config
+                   -> PrefixMap Double
+                   -> Maybe Int
+                   -> IO ([Int], [(HashMap Prefix Double, HashMap Prefix Double)], [(Int, Int)])
 buildValidPrefixes conf pfxs didAutoStop = do
   let minPrefixLength = case cfgForceMinPrefixLength conf of
         Just pl -> pl
-        Nothing -> defaultMinPrefixLength
+        Nothing -> case PM.prefixMapVersion pfxs of
+          Addr4 _ -> defaultMinPrefixLength4
+          Addr6 _ -> defaultMinPrefixLength6
   let maxPrefixLength = case cfgForceMaxPrefixLength conf of
         Just pl -> pl
         Nothing -> case didAutoStop of
           Just autoStopPl -> autoStopPl
-          Nothing -> defaultMaxPrefixLength
+          Nothing -> case PM.prefixMapVersion pfxs of
+            Addr4 _ -> defaultMaxPrefixLength4
+            Addr6 _ -> defaultMaxPrefixLength6
 
   hPutStrLn stderr $ "Min prefix length: " ++ show minPrefixLength
   hPutStrLn stderr $ "Max prefix length: " ++ show maxPrefixLength
@@ -434,8 +473,9 @@ filterValidPrefixes :: Config -> PrefixMap Double -> Int -> (HashMap Prefix Doub
 filterValidPrefixes conf pm pl =
   let removeAtomicAndFull count pfx _ =
         let pl' = PM.prefixLength pfx
+            maxPl = PM.maxPrefixLength pfx
             delta = cfgFullThresh conf
-        in count > 1 && logBase 2 (fromIntegral count) / (32.0 - fromIntegral pl') < 1.0 - delta
+        in count > 1 && logBase 2 (fromIntegral count) / fromIntegral (maxPl - pl') < 1.0 - delta
         
       thisPl = pm
         & PM.sliceAtLength pl
@@ -447,7 +487,7 @@ filterValidPrefixes conf pm pl =
       nextPl = pm
         & PM.sliceAtLength (pl + 1)
         & PM.leaves
-        & filter ((`HM.member` thisPl) . (flip PM.preserve_upper_bits32 pl) . fst)
+        & filter ((`HM.member` thisPl) . (flip PM.preserve_upper_bits pl) . fst)
         & HM.fromList
         
   in (thisPl, nextPl)
@@ -729,6 +769,9 @@ infoDim conf pfxs =
 computePartitions :: Config -> PrefixMap Double -> [(Double, [(Double, Double)])]
 computePartitions conf pfxs =
   let total = treeFold (+) 0.0 $ fmap snd $ PM.leaves pfxs
+      maxPl = case PM.prefixMapVersion pfxs of
+        Addr4 _ -> 32
+        Addr6 _ -> 128
 
       getZ q pl =
         let z = pfxs
@@ -739,7 +782,7 @@ computePartitions conf pfxs =
         in (fromIntegral pl, z)
         
       oneQ q =
-        let zs = fmap (getZ q) [0..32]
+        let zs = fmap (getZ q) [0..maxPl]
         in (q, zs)
 
   in fmap oneQ [-2.0, -1.9..4.0]
@@ -748,26 +791,31 @@ computePartitions conf pfxs =
  - Report the singularity estimates of each address w.r.t. the prefix map
  - Returns (alpha, (address, intercept, r2, number of prefix-lengths actually used))
  -}
-computeSingularities :: Config -> PrefixMap Double -> [(Double, (Word32, Double, Double, Int))]
+computeSingularities :: Config -> PrefixMap Double -> [(Double, (Addr, Double, Double, Int))]
 computeSingularities conf pfxs =
   let addrs = PM.leaves pfxs
+      maxPl = case PM.prefixMapVersion pfxs of
+        Addr4 _ -> 32
+        Addr6 _ -> 128
 
       total = treeFold (+) 0.0 $ fmap snd addrs
 
-      getSingularity :: (Prefix, Double) -> (Double, (Word32, Double, Double, Int))
-      getSingularity (Prefix addr 32, _) =
-        let oneLevel l =
-              let pfx = PM.preserve_upper_bits32 (Prefix addr 32) l
-                  mu = fromJust $ PM.lookup pfx pfxs
-                  muNorm = mu  / total
-              in (- logBase 2 muNorm, mu /= 1)
+      getSingularity :: (Prefix, Double) -> (Double, (Addr, Double, Double, Int))
+      getSingularity (Prefix addr pl, _)
+        | pl == maxPl =
+            let oneLevel l =
+                  let pfx = PM.preserve_upper_bits (Prefix addr pl) l
+                      mu = fromJust $ PM.lookup pfx pfxs
+                      muNorm = mu  / total
+                  in (- logBase 2 muNorm, mu /= 1)
   
-            muLogs = VU.generate 33 oneLevel & VU.takeWhile snd & VU.map fst
-            pl = VU.generate (VU.length muLogs) fromIntegral
+                muLogs = VU.generate (maxPl + 1) oneLevel & VU.takeWhile snd & VU.map fst
+                pls = VU.generate (VU.length muLogs) fromIntegral
 
-            (coef, r2) = Reg.olsRegress [pl] muLogs
-        in (coef VU.! 0, (addr, coef VU.! 1, r2, VU.length muLogs))
-      getSingularity (Prefix _ pl, _) = error $ "Got a /" ++ show pl ++ " prefix as a leaf in computeSingularities. Something's broken."
+                (coef, r2) = Reg.olsRegress [pls] muLogs
+            in (coef VU.! 0, (addr, coef VU.! 1, r2, VU.length muLogs))
+        | otherwise =
+            error $ "Got a /" ++ show pl ++ " prefix as a leaf in computeSingularities. Something's broken."
 
   in addrs
      & fmap getSingularity
@@ -908,18 +956,18 @@ writePartitionsCsv hdl rows = do
 {-
  - Write singularities
  -}
-writeSingularitiesFile :: Config -> [(Double, (Word32, Double, Double, Int))] -> IO ()
+writeSingularitiesFile :: Config -> [(Double, (Addr, Double, Double, Int))] -> IO ()
 writeSingularitiesFile conf rows = do
   let outfile = cfgOutPrefix conf ++ "_singularities.csv"
   hPutStrLn stderr $ "Writing singularities to " ++ outfile
   withFile outfile WriteMode (\hdl -> writeSingularities hdl rows)
 
-writeSingularities :: Handle -> [(Double, (Word32, Double, Double, Int))] -> IO ()
+writeSingularities :: Handle -> [(Double, (Addr, Double, Double, Int))] -> IO ()
 writeSingularities hdl rows = do
   hPutStrLn hdl "alpha,addr,intercept,r2,num_levels"
   forM_ rows $ \(alpha, (addr, intercept, r2, num_levels)) -> do
     hPutStrLn hdl $ show alpha
-      ++ "," ++ B.unpack (ipv4_to_string addr)
+      ++ "," ++ show addr
       ++ "," ++ show intercept
       ++ "," ++ show r2
       ++ "," ++ show num_levels
@@ -927,18 +975,18 @@ writeSingularities hdl rows = do
 {-
  - Write singularities
  -}
-writeWeightsFile :: Config -> [(Int, Word32, Double, Double, Double)] -> IO ()
+writeWeightsFile :: Config -> [(Int, Addr, Double, Double, Double)] -> IO ()
 writeWeightsFile conf rows = do
   let outfile = cfgOutPrefix conf ++ "_weights.csv"
   hPutStrLn stderr $ "Writing weightsto " ++ outfile
   withFile outfile WriteMode (\hdl -> writeWeights hdl rows)
 
-writeWeights :: Handle -> [(Int, Word32, Double, Double, Double)] -> IO ()
+writeWeights :: Handle -> [(Int, Addr, Double, Double, Double)] -> IO ()
 writeWeights hdl rows = do
   hPutStrLn hdl "pl,addr,mu,left,right"
   forM_ rows $ \(pl, addr, mu, left, right) -> do
     hPutStrLn hdl $ show pl
-      ++ "," ++ B.unpack (ipv4_to_string addr)
+      ++ "," ++ show addr
       ++ "," ++ show mu
       ++ "," ++ show left
       ++ "," ++ show right
@@ -1097,13 +1145,13 @@ encodePartitionsRowsJson =
             ) zs
     )
 
-encodeSingularitiesRowsJson :: [(Double, (Word32, Double, Double, Int))] -> [Value]
+encodeSingularitiesRowsJson :: [(Double, (Addr, Double, Double, Int))] -> [Value]
 encodeSingularitiesRowsJson =
   fmap
     (\(alpha, (addr, intercept, r2, num_levels)) ->
         object
         [ "alpha" .= alpha
-        , "addr" .= B.unpack (ipv4_to_string addr)
+        , "addr" .= show addr
         , "intercept" .= intercept
         , "r2" .= r2
         , "num_levels" .= num_levels

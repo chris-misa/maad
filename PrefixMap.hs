@@ -170,6 +170,10 @@ data PrefixMap a where
     -> PrefixMap a
   EmptyMap :: PrefixMap a
 
+prefixMapVersion :: PrefixMap a -> Addr
+prefixMapVersion (Node (Prefix addr _) _ _ _ _) = addr
+prefixMapVersion EmptyMap = error "Trying to get version of the empty map"
+
 {-
  - Insert the given address into the prefix map assuming it is not in the map already.
  - Also returns the length where the prefix departed from the existing tree.
