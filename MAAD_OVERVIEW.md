@@ -1,6 +1,7 @@
 # Overview of MAAD ideas
 
 
+
 **What is MAAD?**
 
 MAAD (Multifractal Address-structure Anomaly Detection) is a new way to detect anomalous IP addresses that may be associated with malicious or unsolicited network traffic.

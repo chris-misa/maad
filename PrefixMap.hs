@@ -378,6 +378,7 @@ shouldStop n pfxs@(Node (Prefix addr _) _ _ _ _) target_width = do
         Addr4 _ -> 30
         Addr6 _ -> 126
 
+      -- TODO: for v6 we have to start at /12 or something because they all have the same first bits!
       prefixCounts :: [(Int, Int)]
       prefixCounts = [
         (pl, length $ leaves $ sliceAtLength pl pfxs)
