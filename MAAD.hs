@@ -785,7 +785,7 @@ computePartitions conf pfxs =
         let zs = fmap (getZ q) [0..maxPl]
         in (q, zs)
 
-  in fmap oneQ [-2.0, -1.9..4.0]
+  in fmap oneQ [-2.0, -2.0 + 1.0/4.0..4.0]
 
 {-
  - Report the singularity estimates of each address w.r.t. the prefix map
