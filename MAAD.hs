@@ -84,7 +84,7 @@ defaultMaxPrefixLength4 :: Int
 defaultMaxPrefixLength4 = 24
 
 defaultMinPrefixLength6 :: Int
-defaultMinPrefixLength6 = 12
+defaultMinPrefixLength6 = 23
 
 defaultMaxPrefixLength6 :: Int
 defaultMaxPrefixLength6 = 64

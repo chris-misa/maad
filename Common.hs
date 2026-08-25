@@ -57,6 +57,7 @@ string_to_ipv6 str =
           [(x, _)] -> x
           _ -> error "Bad IPv6 address"
 
+        -- Deal with the mess caused by "::" notation
         normalize x
           | head x == "" =
             let nzero = 8 - (length x - 2) -- account for initial two ""'s
