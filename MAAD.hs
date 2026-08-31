@@ -118,6 +118,7 @@ data Config = Config
   , cfgWeights :: Bool
   , cfgTest :: Bool
   , cfgTestFile :: Maybe String
+  , cfgTestFileIsStructure :: Bool
   , cfgV6 :: Bool
   , cfgCsv :: Bool
   , cfgAddrCol :: Maybe Int
@@ -229,6 +230,9 @@ optparser = Config
   <*> optional (strOption ( long "compare" <> metavar "FILEPATH2"
                             <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
                             ))
+  <*> switch ( long "compare-structure"
+               <> help "If set, assume FILEPATH2 (used by --compare) contains the already-computed structure function (in csv format as output by MAAD with the same q-values) instead of a raw set of addresses. Useful for pre-computing the structure function to compare against or comparing against theoretical structure functions. (Assumes 9 prefix lengths were used.)"
+             )
   <*> switch ( long "ipv6" <> short '6'
                <> help "Input file contains IPv6 addresses instead of IPv4 addresses (the default)."
              )
@@ -526,6 +530,42 @@ computeTauTilde conf validPfxs =
         [ (pl, q, tau, v) | (q, moms) <- allMoments, (pl, (tau, v)) <- (cfgPrefixLengths conf `zip` moms)]
   in (taus, perPrefixLengthVars)
 
+{-
+ - Load the addresses in testfile and just compute and return their tauTildes and sds
+ - As a utility for computeT2Test
+ -}
+tausFromAddressFile :: Config -> String -> IO (VU.Vector (Double, Double, Double), Double, Int)
+tausFromAddressFile conf testfile = do
+  (testPfxs, testAutoStopped) <- loadAddresses conf testfile
+  
+  (testLengths, testPfxsValid, _) <- buildValidPrefixes conf testPfxs testAutoStopped
+
+  let (testTaus, _) = computeTauTilde (conf { cfgPrefixLengths = testLengths }) testPfxsValid
+      m = fromIntegral $ length testLengths
+      nTestAddrs = length $ PM.leaves testPfxs
+
+  return (testTaus, m, nTestAddrs)
+
+{-
+ - Load the tauTilde estimated directly from a csv file (e.g., produced by MAAD.hs)
+ - As a utility for computeT2Test
+ -}
+tausFromTausFile :: Config -> String -> IO (VU.Vector (Double, Double, Double), Double, Int)
+tausFromTausFile conf testfile = do
+  contents <- if testfile == "-" then BL8.getContents else BL8.readFile testfile
+  let testTaus = contents
+        & BL8.lines
+        & tail -- assume there will always be a csv header
+        & fmap (BL8.split ',') -- :: [[ByteString lazy]]
+        & fmap (fmap (read . BL8.unpack))
+        & fmap tuplify
+        & VU.fromList
+
+  return (testTaus, 9, 0)
+
+  where tuplify [q, tauTilde, sd] = (q, tauTilde, sd)
+        tuplify ops = error $ "Unexpected row in taus file: " ++ show ops
+
 
 {-
  - Load the addresses in testfile and compare them against the addresses represented by baselinePerPrefixLengths
@@ -544,22 +584,15 @@ computeTauTilde conf validPfxs =
 computeT2Test :: Config -> String -> VU.Vector (Double, Double, Double) -> Int  -> IO CompareResult
 computeT2Test conf testfile baselineTaus numAddresses = do
 
-  -- First load the test addresses and compute their tauTilde values
-        
-  (testPfxs, testAutoStopped) <- loadAddresses conf testfile
+  -- Load the test addresses and compute their tauTilde values, otherwise load structure function directly
+  (testTaus, m, nTestAddrs) <- case cfgTestFileIsStructure conf of
+    False -> tausFromAddressFile conf testfile
+    True -> tausFromTausFile conf testfile
+
   
-  (testLengths, testPfxsValid, _) <- buildValidPrefixes conf testPfxs testAutoStopped
-
-  let (testTaus, _) = computeTauTilde (conf { cfgPrefixLengths = testLengths }) testPfxsValid
-
-      -- Define sample size as the number of prefix lengths used
-      n :: Double
+  let n :: Double
       n = fromIntegral $ length $ cfgPrefixLengths conf
-      -- n = fromIntegral numAddresses
-
-      m :: Double
-      m = fromIntegral $ length testLengths
-      -- m = fromIntegral $ length $ PM.leaves testPfxs
+      -- Define sample size as the number of prefix lengths used
 
       -- Just look at a fixed set of q-values known to be in the range of convergence
       testQs = [q | q <- qs, q >= 1.0/2.0 && q <= 3.0/2.0 && q /= 1.0]
@@ -618,7 +651,7 @@ computeT2Test conf testfile baselineTaus numAddresses = do
     , crM = m
     , crP = p
     , crNumBaselineAddrs = numAddresses
-    , crNumTestAddrs = length $ PM.leaves testPfxs
+    , crNumTestAddrs = nTestAddrs
     }
 
 
