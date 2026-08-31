@@ -4,7 +4,7 @@ ghc -O2 MAAD.hs -main-is MAAD
 
 # ghc -O2 CantorSet.hs -main-is CantorSet
 
-# ghc -O2 UniformSet.hs -main-is UniformSet
+ghc -O2 UniformSet.hs -main-is UniformSet
 
 # ghc -O2 AtomicPrefixes.hs -main-is AtomicPrefixes
 
