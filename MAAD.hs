@@ -167,7 +167,7 @@ data Results = Results
   , resPartitions :: Maybe [(Double, [(Double, Double)])]
   , resSingularities :: Maybe [(Double, (Addr, Double, Double, Int))]
   , resWeights :: Maybe [(Int, Addr, Double, Double, Double)]
-  , resTest :: Maybe (Double, Double, (Double, Double), (Double, Double))
+  , resTest :: Maybe CompareResult
   , resCompare :: Maybe CompareResult
   }
 
@@ -225,7 +225,7 @@ optparser = Config
                <> help "Compute the weights at each node in the prefix tree."
              )
   <*> switch ( long "test"
-               <> help "Perform simple t-test for nonlinearity of the structure function based on q = 0 and q = 2."
+               <> help "Test if the structure function is non-linear. Uses the same method as --compare, but compares against an imaginary structure function that's just a linear interpolation of the estimated structure function between the min and max q-values."
              )
   <*> optional (strOption ( long "compare" <> metavar "FILEPATH2"
                             <> help "Perform Hotelling's t^2 test of the null hypothesis that the addresses in FILEPATH2 come from the same distribution as the addresses in FILEPATH (using the structure function). Assumes that FILEPATH2 follows the same line format as FILEPATH (e.g., csv or raw list of addresses, etc.)."
@@ -329,7 +329,7 @@ run conf = do
       partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
       singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
       weightsRows = if cfgWeights conf' then Just (computeWeights conf' validLengths validPfxs) else Nothing
-      testResult = if cfgTest conf' then Just (computeZTest conf' taus) else Nothing
+  testResult <- if cfgTest conf' then fmap Just (computeT2TestInterpolateSelf conf' taus (length $ PM.leaves pfxs)) else return Nothing
   compareResult <- case cfgTestFile conf' of
     Just testfile -> fmap Just (computeT2Test conf' testfile taus (length $ PM.leaves pfxs))
     Nothing -> return Nothing
@@ -346,37 +346,7 @@ run conf = do
     , resCompare = compareResult
     }
 
-computeZTest :: Config -> VU.Vector (Double, Double, Double) -> (Double, Double, (Double, Double), (Double, Double))
-computeZTest conf taus =
-  let (_, tauTilde0, sd0) = case VU.find (\(q, _, _) -> q == 0.0) taus of
-        Just t -> t
-        Nothing -> error $ "Failed to find q == 0.0!"
-      (_, tauTilde2, sd2) = case VU.find (\(q, _, _) -> q == 2.0) taus of
-        Just t -> t
-        Nothing -> error $ "Failed to find q == 2.0!"
 
-  -- Under null hypothesis that the measure is not multifractal, we have tau0 + tau2 == 0 (because tau1 == 0)
-  -- Also, tauTilde0 + tauTilde2 is Normal with mean tau0 + tau2 = 0 and variance sd0^2 + sd1^2
-  -- use two-tailed z-test
-      z = (tauTilde0 + tauTilde2) / sqrt (sd0 ** 2.0 + sd2 ** 2.0)
-      p = 2.0 * cumulative (normalDistr 0.0 1.0) (- abs z)
-  in (p, z, (tauTilde0, sd0), (tauTilde2, sd2))
-
-  -- turns out this doesn't work that well because the variances are super low---so it's over sensitive.
-  -- e.g., for uniform the absolute value tauTilde0 + tauTilde1 is smaller, but the variance is so low that the z statistic becomes way more extreme than in the real-world case where the variance is higher...
-
-  -- interestingly, for the Cantor-set construction, we get much higher p-values (e.g., 0.83 using /8 - /16)
-  -- this is not because the thing is more curved, but because the variance is higher (similar to real-world).
-
-  -- still should check if there's any reason to suspect the O&W variance is under-estimating!
-  -- the O&W estimators variance approaches zero in the perfectly-uniform case...
-  -- also, it goes to zero faster than tauTilde0 + tauTilde2 goes to zero...
-
-  -- probably need to use multi-variate test instead of this difference-based approach?
-  -- tau(0) = -1 with extremely low variance -> strong evidence for null hypothesis
-  -- tau(1) = 0.99999 with some variance -> weak evidence against null hypothesis
-  -- ... but in current thing it just sees tau(0) + tau(1) = 0.01 with very low variance
-  
 
 computeWeights :: Config
                -> [Int]
@@ -568,7 +538,7 @@ tausFromTausFile conf testfile = do
 
 
 {-
- - Load the addresses in testfile and compare them against the addresses represented by baselinePerPrefixLengths
+ - Load the addresses or structure function in testfile and compare them against the addresses represented by baselinePerPrefixLengths
  - The null hypothesis is that the addresses in testfile have the same distribution as baselinePerPrefixLengths.
  -
  - baselineTaus :: Vector (q, tauTilde, sd)
@@ -652,6 +622,71 @@ computeT2Test conf testfile baselineTaus numAddresses = do
     , crP = p
     , crNumBaselineAddrs = numAddresses
     , crNumTestAddrs = nTestAddrs
+    }
+
+
+computeT2TestInterpolateSelf :: Config -> VU.Vector (Double, Double, Double) -> Int  -> IO CompareResult
+computeT2TestInterpolateSelf conf baselineTaus numAddresses = do
+  
+  let n :: Double
+      n = fromIntegral $ length $ cfgPrefixLengths conf
+      m = n
+      -- Define sample size as the number of prefix lengths used
+
+      -- Just look at a fixed set of q-values known to be in the range of convergence
+      qMin = 1.0 / 2.0
+      qMax = 3.0 / 2.0
+      testQs = [q | q <- qs, q >= qMin && q <= qMax && q /= 1.0]
+
+      -- Size of each sample: each q value is considered a dimension of the sample
+      p :: Double
+      p = fromIntegral $ length testQs
+
+      xBar :: LA.Vector Double
+      xBar = baselineTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, tau, _) -> tau)
+        & VU.toList
+        & LA.fromList
+
+      xVar :: LA.Matrix Double
+      xVar = baselineTaus
+        & VU.filter (\(q, _, _) -> q `elem` testQs)
+        & VU.map (\(_, _, sd) -> sd ** 2.0)
+        & VU.toList
+        & LA.fromList
+        & LA.diag -- assume each q is independent
+
+      -- ys are just interpolated as straight line from first to last of xs
+      yBar :: LA.Vector Double
+      yBar = testQs
+        & fmap (\q -> (LA.minElement xBar) * (1.0 - ((q - qMin) / (qMax - qMin))) + (LA.maxElement xBar) * ((q - qMin) / (qMax - qMin)))
+        & LA.fromList
+
+      yVar :: LA.Matrix Double
+      yVar = xVar
+
+      -- pooled covariance
+      s :: LA.Matrix Double
+      s = (1.0 / (n + m - 2)) `LA.scale` (n `LA.scale` xVar + m `LA.scale` yVar)
+
+      delta2 = (((n + m - p - 1) * n * m) / ((n + m - 2) * p * (n + m)))
+        * ((yBar - xBar) LA.<# LA.inv s) LA.<.> (yBar - xBar)
+
+  when (n + m - p - 1 <= 0) $
+    error $ "Failed to get enough prefix lengths for test with p = " ++ show p
+
+        
+  let pValue = 1.0 - cumulative (fDistribution (round p) (round $ n + m - p - 1)) delta2
+
+  return $ CompareResult
+    { crPValue = pValue
+    , crDelta2 = delta2
+    , crN = n
+    , crM = m
+    , crP = p
+    , crNumBaselineAddrs = numAddresses
+    , crNumTestAddrs = 0
     }
 
 
@@ -883,7 +918,7 @@ emitCsvResults conf metadata res =
     maybe (return ()) (writePartitionsCsv stdout) (resPartitions res)
     maybe (return ()) (writeSingularities stdout) (resSingularities res)
     maybe (return ()) (writeWeights stdout) (resWeights res)
-    maybe (return ()) (writeZTestResult stdout) (resTest res)
+    maybe (return ()) (writeT2TestResult stdout) (resTest res)
     maybe (return ()) (writeT2TestResult stdout) (resCompare res)
   else do
     writeMetadata conf metadata
@@ -893,7 +928,7 @@ emitCsvResults conf metadata res =
     maybe (return ()) (writePartitionsFile conf) (resPartitions res)
     maybe (return ()) (writeSingularitiesFile conf) (resSingularities res)
     maybe (return ()) (writeWeightsFile conf) (resWeights res)
-    maybe (return ()) (writeZTestResultFile conf) (resTest res)
+    maybe (return ()) (writeT2TestResultSelfFile conf) (resTest res)
     maybe (return ()) (writeT2TestResultFile conf) (resCompare res)
 
 {-
@@ -1026,23 +1061,14 @@ writeWeights hdl rows = do
 
 
 {-
- - Write t-test results
+ - Write t2-test based on interpolated structure function
  -}
-writeZTestResultFile :: Config -> (Double, Double, (Double, Double), (Double, Double)) -> IO ()
-writeZTestResultFile conf res = do
-  let outfile = cfgOutPrefix conf ++ "_ttest.csv"
-  hPutStrLn stderr $ "Writing test results to " ++ outfile
-  withFile outfile WriteMode (\hdl -> writeZTestResult hdl res)
 
-writeZTestResult :: Handle -> (Double, Double, (Double, Double), (Double, Double)) -> IO ()
-writeZTestResult hdl (p, t, (tauTilde0, sd0), (tauTilde2, sd2)) = do
-  hPutStrLn hdl "p_value,t_value,tauTilde_0,sd_0,tauTilde_2,sd_2"
-  hPutStrLn hdl $ show p
-    ++ "," ++ show t
-    ++ "," ++ show tauTilde0
-    ++ "," ++ show sd0
-    ++ "," ++ show tauTilde2
-    ++ "," ++ show sd2
+writeT2TestResultSelfFile :: Config -> CompareResult -> IO ()
+writeT2TestResultSelfFile conf res = do
+  let outfile = cfgOutPrefix conf ++ "_test.csv"
+  hPutStrLn stderr $ "Writing test results to " ++ outfile
+  withFile outfile WriteMode (\hdl -> writeT2TestResult hdl res)
 
 {-
  - Write t2-test comparison results
