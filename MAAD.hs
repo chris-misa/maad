@@ -163,7 +163,7 @@ data Metadata = Metadata
 data Results = Results
   { resStructure :: Maybe [(Double, Double, Double)]
   , resSpectrum :: Maybe [(Double, Double)]
-  , resDimensions :: Maybe [(Double, Double)]
+  , resDimensions :: Maybe [(Double, Double, Double)]
   , resPartitions :: Maybe [(Double, [(Double, Double)])]
   , resSingularities :: Maybe [(Double, (Addr, Double, Double, Int))]
   , resWeights :: Maybe [(Int, Addr, Double, Double, Double)]
@@ -802,14 +802,17 @@ computeCriticalRegion taus =
 {-
  - Compute generalized dimension rows.
  -}
-computeDimensionRows :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> [(Double, Double)]
+computeDimensionRows :: Config -> VU.Vector (Double, Double, Double) -> PrefixMap Double -> [(Double, Double, Double)]
 computeDimensionRows conf taus pfxs =
-  let d1 = infoDim conf pfxs
-      otherDims = taus
-        & VU.toList
-        & filter (\(q, _, _) -> q == 0.0 || q == 2.0)
-        & fmap (\(q, tauTilde, _) -> (q, tauTilde / (q - 1.0)))
-  in (1.0, d1) : otherDims
+  let getDim q = taus
+        & VU.find (\(q', _, _) -> q' == q)
+        & maybe (error $ "Failed to find expected q value q = " ++ show q) (\(q, tauTilde, sd) -> (tauTilde / (q - 1.0), sd))
+
+      (d0, sd0) = getDim 0.0
+      d1 = infoDim conf pfxs
+      (d2, sd2) = getDim 2.0
+        
+  in [(0.0, d0, sd0), (1.0, d1, 0.0), (2.0, d2, sd2)]
 
 {-
  - Compute D_1, the information dimension
@@ -993,17 +996,17 @@ writeSpectrumCsv hdl rows = do
 {-
  - Write generalized dimensions.
  -}
-writeDimensionsFile :: Config -> [(Double, Double)] -> IO ()
+writeDimensionsFile :: Config -> [(Double, Double, Double)] -> IO ()
 writeDimensionsFile conf rows = do
   let outfile = cfgOutPrefix conf ++ "_dimensions.csv"
   hPutStrLn stderr $ "Writing generalized dimensions to " ++ outfile
   withFile outfile WriteMode (\hdl -> writeDimensionsCsv hdl rows)
 
-writeDimensionsCsv :: Handle -> [(Double, Double)] -> IO ()
+writeDimensionsCsv :: Handle -> [(Double, Double, Double)] -> IO ()
 writeDimensionsCsv hdl rows = do
-  hPutStrLn hdl "q,dim"
-  forM_ rows $ \(q, dim) ->
-    hPutStrLn hdl (show q ++ "," ++ show dim)
+  hPutStrLn hdl "q,dim,sd"
+  forM_ rows $ \(q, dim, sd) ->
+    hPutStrLn hdl (show q ++ "," ++ show dim ++ "," ++ show sd)
 
 {-
  - Write partition functions.
@@ -1180,13 +1183,14 @@ encodeSpectrumRowsJson rows =
     )
     rows
 
-encodeDimensionRowsJson :: [(Double, Double)] -> [Value]
+encodeDimensionRowsJson :: [(Double, Double, Double)] -> [Value]
 encodeDimensionRowsJson rows =
   fmap
-    (\(q, dim) ->
+    (\(q, dim, sd) ->
       object
         [ "q" .= q
         , "dim" .= dim
+        , "sd" .= sd
         ]
     )
     rows
