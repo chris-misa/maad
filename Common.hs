@@ -35,6 +35,7 @@ string_to_ipv4 str =
   & B.lines
   & zip [24,16..0]
   & fmap (\(b, x) -> (readInt x `shiftL` b))
+  & (\xs -> if length xs /= 4 then error ("Bad IPv4 address: only " ++ (show $ length xs) ++ " bytes!") else xs)
   & foldl1 (+)
   where readInt s = case B.readInt s of
           Just (x, _) -> fromIntegral x
