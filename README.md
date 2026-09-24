@@ -1,6 +1,8 @@
 # MAAD
 
-Source code for various Multifractal Address Anomaly Detection (MAAD) techniques.
+This repo contains a reference implementation of various methods for analyzing the multifractal scaling of measures over the IPv4 and IPv6 address spaces. The main entry point is [MAAD.hs](MAAD.hs) which includes options for estimating the structure function, generalized dimensions, multifractal spectrum, comparison test statistics, and other useful things. Other files are either utilities used in MAAD.hs, tools for generating example (mostly mono-fractal) sets of addresses for comparison, or one-shot stand-alone analysis scripts. Yes, eventually this will all get cleaned up.
+
+The name MAAD comes from a core thesis that these numeric estimations of multifractal scaling can be used for a new kind of "spatial" anomaly detection in Internet traffic. See [MAAD_OVERVIEW.md](MAAD_OVERVIEW.md) for details. Of course, these tools may be useful for more that just anomaly detection.
 
 For background see Misa et al., 2025: https://arxiv.org/pdf/2504.01374.
 
@@ -12,108 +14,45 @@ $ nix-shell
 $ ./compile.sh
 ```
 
+This will build the main MAAD executable entry point and anything else uncommented in `compile.sh`.
+
 Otherwise, find your own way to get `ghc` and required libraries listed in `shell.nix`, then `./compile.sh`.
 
 # Usage
 
-The main executable produced is called `MAAD`:
-```
-$ ./MAAD --help
-MAAD - Multifractal Address-space Anomaly Detection
+The main executable produced is called `MAAD`. Run `./MAAD --help` for detailed and up-to-date documentation.
 
-Usage: MAAD --input FILEPATH --output FILEPATH_PREFIX [--format FORMAT] 
-            [-t|--structure] [-s|--spectrum] [-d|--dimensions] [--csv] 
-            [-a|--addr-col COL] [-m|--meas-col COL] [--skip-first] 
-            [--spillover-threshold DELTA] [--atomic-threshold THRESH] 
-            [--auto-stop]
+General usage notes:
 
-  Compute a combination of different multifractal analyses of a given set of IP
-  addresses, optimally based on a per-address measure.
+* To read from stdin, use `--input -`. By default a file with only one dotted-decimal IPv4 address (or, if `--ipv6` is given, one standard textual IPv6 address representation) on each line is expected. Otherwise specify `--csv` and use the other related controls to specify which column holds addresses and (optionally) which holds the measure for each address. If you don't specify a measure column, each address is assumed to have measure one which analyzes the structure of how many distinct addresses are in each address prefix.
 
-Available options:
-  --input FILEPATH         File to read (csv or one address on each line).
-  --output FILEPATH_PREFIX Prefix for output files, or - for stdout.
-  --format FORMAT          Output format: csv or json. (default: csv)
-  -t,--structure           Compute structure function
-                           (OUT_PREFIX_structure.csv).
-  -s,--spectrum            Compute multifractal spectrum
-                           (OUT_PREFIX_spectrum.csv).
-  -d,--dimensions          Compute generalized dimensions
-                           (OUT_PREFIX_dimensions.csv).
-  --csv                    Input file is csv (with multiple columns that need to
-                           be parsed).
-  -a,--addr-col COL        If input is a csv file, this (zero-based) column
-                           contains the IP addresses to analyze. Default to
-                           column 0.
-  -m,--meas-col COL        If the input is a csv file, this (zero-based) column
-                           contains the measure associated with each IP address.
-                           If not specified, each address will receive constant
-                           measure 1.0 (even if --csv is specified).
-  --skip-first             Skip the first (header) row before reading the data.
-  --spillover-threshold DELTA
-                           Threshold for determining when a prefix is estimated
-                           to have spilled over. Mostly only important for
-                           determining max prefix length. (default: 5.0e-2)
-  --atomic-threshold THRESH
-                           Determine minimum prefix length as smallest prefix
-                           length where the fraction of atomic prefixes are at
-                           least THRESH. (default: 1.0e-4)
-  --auto-stop              Automatically stop reading addresses after the
-                           estimated normalized CI around /24 prefixes is
-                           smaller than 1.0e-2.
-  -h,--help                Show this help text
-```
+* To write a single csv analysis to stdout, use `--output - --format csv`. Note that for the csv format, the output flag specifies a prefix (possibly including directory paths) for multiple output files (e.g., `OUTPUT_structure.csv`, `OUTPUT_metadata.csv`, etc.)  Because of this, writing to stdout is only allowed if you're only doing a single analysis (in which case the metadata output is skipped). Alternatively, with `--format json` all outputs are combined in a single json object.
 
-To read from stdin, use `--input -`.
-
-To write a single csv analysis to stdout, use `--output - --format csv`.
-
-To write combined machine-readable output for multiple analyses to stdout, use
-`--output - --format json`.
-
-Example:
-```
-$ ./MAAD --input - --output - --format json --structure --spectrum --dimensions < test_data/simple.csv
-```
+* MAAD includes a method for automatically determining a sufficient sample size (i.e., how many distinct IP addresses are needed to produce a high-confidence estimate). This is turned off by default. To enable it, use the `--auto-stop` flag. Be careful to note that even with `--auto-stop` enabled, the current version of MAAD does _not_ complain if the file simply did not contain enough addresses. Rather, this is reported in the metadata output's `did_auto_stop` field.
 
 A couple example input files with lists of IPv4 addresses are included in `./test_data/` for testing.
 
-There are also single analysis executables that write the resulting csv to stdout as described below (though these may get phased out later).
-
-## Multifractal Spectrum
-
-Usage:
+Example 1: write the structure function to stdout.
 ```
-$ ./Spectrum <input filepath>
+$ ./MAAD --structure --auto-stop --input test_data/caida_100k --output -
 ```
 
-Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
-
-Outputs the estimated multifractal spectrum (f(alpha)) for the given list of addresses. See `Spectrum.hs` for details.
-
-## Singularities
-
-Usage:
+Example 2: compare the structure functions of two different samples and write the resulting p-value and some other stuff to stdout. (For these example files the p-value should basically be zero!)
 ```
-$ ./Singularities <number of anomalous addresses to report> <input filepath>
+$ ./MAAD --auto-stop --input test_data/caida_100k --compare test_data/uniform_100k --output -
 ```
 
-Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
-
-Outputs the addresses with highest and loweset alpha(x) estimated using least-squares. See `Singularities.hs` for details.
-
-
-## Structure Function
-
-Usage:
+Example 3: write the generalized dimensions, multifractal spectrum, and metadata to stdout as json.
 ```
-$ ./StructureFunction <input filepath>
+$ ./MAAD --auto-stop -sd --input test_data/caida_100k --format json --output -
 ```
 
-Assumes the input file is a list of IPv4 addresses in dotted-decimal format (e.g., 192.0.2.1) with one address per line.
+Example 4: write the same as above, but to separate csv files, namely `./caida_100k_dimensions.csv`, `./caida_100k_spectrum.csv`, and `./caida_100k_metadata.csv`.
+```
+$ ./MAAD --auto-stop -sd --input test_data/caida_100k --format csv --output ./caida_100k
+```
 
-Not really an anomaly detection method. Outputs the estimated structure function (tauTilde(q)) for the given list of addresses along with estimated standard deviations. See `StructureFunction.hs` for details.
-
+WARNING: several different metadata fields that MAAD tracks internally have not yet been incorporated in the json output. Until this is fixed, prefer csv output format for the complete metadata.
 
 # Visualization
 
@@ -121,5 +60,5 @@ Scripts to generate plots of the structure and spectrum functions are included i
 
 For example, if you've saved the spectrum function in `spec.csv`, you could generate a plot by running
 ```
-$ ./plots/plot.sh plots/spectrum.gnuplot spec.csv spec.svg
+$ ./plots/plot.sh plots/spectrum.gnuplot caida_100k_spectrum.csv spec.svg
 ```
