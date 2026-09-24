@@ -15,6 +15,7 @@ mkShell {
       treefold
       optparse-applicative
       random-shuffle
+      hmatrix
     ]))
     emacs
     gnuplot

@@ -38,7 +38,8 @@ main = do
   args <- getArgs
   case args of
     [filepath] -> do
-      (pfxs, _) <- PM.fromFile filepath True Nothing (head . tail) (const 1.0)
+      (pfxs, _) <- PM.fromFile filepath True Nothing (head . tail) (const 1.0) -- for csv files with title row and address as second column
+      -- (pfxs, _) <- PM.fromFile filepath False Nothing head (const 1.0) -- for raw files with one address on each line
       putStrLn "pl,n,atomic,spillover,max_mu,min_mu"
       forM_ [0..32] $ \pl -> do
         let pfxs_at_pl = pfxs & PM.sliceAtLength pl & PM.leavesCount -- [(Int, (Prefix, a))]

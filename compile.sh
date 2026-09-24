@@ -2,13 +2,15 @@
 
 ghc -O2 MAAD.hs -main-is MAAD
 
-ghc -O2 CantorSet.hs -main-is CantorSet
+# ghc -O2 CantorSet.hs -main-is CantorSet
 
-ghc -O2 AtomicPrefixes.hs -main-is AtomicPrefixes
+# ghc -O2 UniformSet.hs -main-is UniformSet
 
-ghc -O2 PartitionFunctions.hs -main-is PartitionFunctions
+# ghc -O2 AtomicPrefixes.hs -main-is AtomicPrefixes
 
-ghc -O2 Transform.hs -main-is Transform
+# ghc -O2 PartitionFunctions.hs -main-is PartitionFunctions
+
+# ghc -O2 Transform.hs -main-is Transform
 
 # ghc -O2 AtomicSpillover.hs -main-is AtomicSpillover
 
