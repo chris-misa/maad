@@ -305,6 +305,8 @@ run conf = do
 
       (taus, perPrefixLengthVars) = computeTauTilde conf' validPfxs
 
+      criticalRegion = computeCriticalRegion taus
+
       -- TDOD add an option so we output per-prefix results only if asked for... 
   
       -- Compute the metadata
@@ -318,13 +320,13 @@ run conf = do
         , metaPrefixCounts = fmap (second (HM.size . fst)) (cfgPrefixLengths conf' `zip` validPfxs)
         , metaMultinomialFits = fmap (multinomialFit conf') (cfgPrefixLengths conf' `zip` fmap fst validPfxs)
         , metaPerPrefixLengthVars = perPrefixLengthVars
-        , metaCriticalRegion = computeCriticalRegion taus
+        , metaCriticalRegion = criticalRegion
         }
 
   
       -- Compute what was requested
       structureRows = if cfgStructure conf' then Just (VU.toList taus) else Nothing
-      spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus) else Nothing
+      spectrumRows = if cfgSpectrum conf' then Just (computeSpectrumRows taus criticalRegion) else Nothing
       dimensionRows = if cfgDimensions conf' then Just (computeDimensionRows conf' taus pfxs) else Nothing
       partitionsRows = if cfgPartitions conf' then Just (computePartitions conf' pfxs) else Nothing
       singularitiesRows = if cfgSingularities conf' then Just (computeSingularities conf' pfxs) else Nothing
@@ -749,8 +751,10 @@ oneMoment conf q (thisPl, nextPl) =
 {-
  - Compute multifractal spectrum rows.
  -}
-computeSpectrumRows :: VU.Vector (Double, Double, Double) -> [(Double, Double)]
-computeSpectrumRows taus =
+computeSpectrumRows :: VU.Vector (Double, Double, Double)
+                    -> (Double, Double)
+                    -> [(Double, Double)]
+computeSpectrumRows taus (qMax, qMin) =
   -- Estimate alpha and f(alpha) for each q
   let alphas = [1..VU.length taus - 2]
         & fmap (\i ->
@@ -759,16 +763,20 @@ computeSpectrumRows taus =
                       (_, nextTau, _) = taus VU.! (i + 1)
                       alpha = (nextTau - prevTau) / (2 * deltaQ)
                       f = q * alpha - tau
-                  in (alpha, f)
+                  in (q, (alpha, f))
                )
 
-      -- Filter for range where alpha is monotonic decreasing
+      -- Filter for alphas derived from qs in critical region and inner range where alpha is monotonically decreasing, assuming any other behavior is just noise
       -- Note this always skips the first alpha. Should be ok if we have enough alpha samples...
-      diffs = zip alphas (drop 1 alphas)
-        & fmap (\((a1, _), (a2, f2)) -> (a1 > a2, (a2, f2)))
-        & dropWhile (not . fst) -- assume it only turns around once at beginning and once at end...
-        & takeWhile fst
+
+      criticalAlphas = alphas
+        & filter (\(q, _) -> qMin <= q && q <= qMax)
         & fmap snd
+      diffs = (criticalAlphas `zip` drop 1 criticalAlphas)
+        & fmap (\((a1, _), (a2, f2)) -> (a1 >= a2, (a2, f2))) -- compute diffs where alpha is strictly decreasing
+        & dropWhile (not . fst) -- drop them, assuming it only turns around once at the beginning...
+        & takeWhile fst -- ... and once at the end
+        & fmap snd 
   in diffs
 
 computeCriticalRegion :: VU.Vector (Double, Double, Double) -> (Double, Double)
